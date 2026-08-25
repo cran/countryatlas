@@ -5,28 +5,30 @@
 \alias{world_snapshot}
 \title{Offline snapshot of world data}
 \format{
-A list with two elements:
+A list with three elements:
 \describe{
 \item{countries}{A tibble, one row per country, with \code{iso3c}, \code{iso2c},
 \code{country}, classifications and curated indicators
 (\code{gdp_per_capita}, \code{population}, \code{life_expectancy}, \code{co2_per_capita}).}
-\item{sf}{A low-resolution \code{sf} object with the same per-country columns and
-a \code{geometry} column (Natural Earth 110m). Present only if \code{sf} was
-available when the package was built.}
+\item{sf}{\code{NULL} in the released package -- geometry is not bundled twice.
+Attach it on demand with \code{\link[=attach_geometry]{attach_geometry()}}:
+\code{attach_geometry(world_snapshot$countries, geometry = "sf")} pulls the
+same Natural Earth 110m polygons from \code{rnaturalearth}.}
 \item{year}{The reference year.}
 }
+\code{country} carries the World Bank's own names, which differ from the
+\code{countrycode} names used by \link{country_meta} for 38 countries.
 }
 \source{
 World Bank via \pkg{WDI}; geometry from Natural Earth via
-\pkg{rnaturalearth}.
+\pkg{rnaturalearth}. Snapshot year: 2024.
 }
 \usage{
 world_snapshot
 }
 \description{
-A small, lazy-loaded snapshot of a curated indicator set for one recent year,
-as both a country-level tibble and a low-resolution \code{sf} object. It lets every
-example, test and vignette run offline and deterministically, without the
-World Bank API.
+A small, lazy-loaded, one-row-per-country snapshot of a curated indicator
+set for one recent year. It lets every example, test and vignette run
+offline and deterministically, without the World Bank API.
 }
 \keyword{datasets}

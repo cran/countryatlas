@@ -355,10 +355,31 @@ These features require the optional <code>sf</code> and
 <span id="cb2-3"><a href="#cb2-3" tabindex="-1"></a>            <span class="at">title =</span> <span class="st">&quot;GDP per capita (Equal Earth projection)&quot;</span>)</span></code></pre></div>
 <p><code>world_map()</code> auto-detects the <code>sf</code> backend and
 applies the projection through <code>ggplot2::coord_sf()</code>.
-Available projections include <code>&quot;equal_earth&quot;</code> (the default —
+Available projections are <code>&quot;equal_earth&quot;</code> (the default —
 equal-area and good-looking), <code>&quot;robinson&quot;</code>,
-<code>&quot;mollweide&quot;</code>, <code>&quot;natural_earth&quot;</code> and
-<code>&quot;plate_carree&quot;</code>.</p>
+<code>&quot;mollweide&quot;</code>, <code>&quot;natural_earth&quot;</code>,
+<code>&quot;plate_carree&quot;</code>, <code>&quot;mercator&quot;</code>,
+<code>&quot;winkel_tripel&quot;</code>, <code>&quot;eckert4&quot;</code>,
+<code>&quot;gall_peters&quot;</code>, <code>&quot;orthographic&quot;</code>,
+<code>&quot;azimuthal_equal_area&quot;</code>, <code>&quot;north_polar&quot;</code> and
+<code>&quot;south_polar&quot;</code>.</p>
+</div>
+<div id="the-world-as-a-globe" class="section level2">
+<h2>The world as a globe</h2>
+<p><code>globe_map()</code> draws an orthographic globe centred on
+<code>lon</code>/<code>lat</code>. The default <code>&quot;sf&quot;</code> backend
+gives the cleanest limb; the <code>&quot;polygon&quot;</code> backend below needs
+only <code>maps</code> + <code>mapproj</code> (no <code>sf</code>):</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb3-1"><a href="#cb3-1" tabindex="-1"></a><span class="fu">globe_map</span>(world_snapshot<span class="sc">$</span>countries, continent, <span class="at">backend =</span> <span class="st">&quot;polygon&quot;</span>,</span>
+<span id="cb3-2"><a href="#cb3-2" tabindex="-1"></a>          <span class="at">style =</span> <span class="st">&quot;categorical&quot;</span>, <span class="at">lon =</span> <span class="dv">10</span>, <span class="at">lat =</span> <span class="dv">20</span>)</span></code></pre></div>
+<div class="sourceCode" id="cb4"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb4-1"><a href="#cb4-1" tabindex="-1"></a><span class="co"># With the sf backend (smoother limb, real great circles):</span></span>
+<span id="cb4-2"><a href="#cb4-2" tabindex="-1"></a><span class="fu">world_data</span>(<span class="dv">2020</span>, <span class="at">geometry =</span> <span class="st">&quot;sf&quot;</span>) <span class="sc">|&gt;</span></span>
+<span id="cb4-3"><a href="#cb4-3" tabindex="-1"></a>  <span class="fu">globe_map</span>(gdp_per_capita, <span class="at">lon =</span> <span class="dv">10</span>, <span class="at">lat =</span> <span class="dv">30</span>)</span></code></pre></div>
+<p><code>spin_globe()</code> turns that into a rotating animation — one
+<code>globe_map()</code> frame per central longitude, assembled into a
+looping GIF with <code>gifski</code> (or <code>magick</code>):</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" tabindex="-1"></a><span class="fu">spin_globe</span>(world_snapshot<span class="sc">$</span>countries, continent, <span class="at">backend =</span> <span class="st">&quot;polygon&quot;</span>,</span>
+<span id="cb5-2"><a href="#cb5-2" tabindex="-1"></a>           <span class="at">style =</span> <span class="st">&quot;categorical&quot;</span>, <span class="at">n_frames =</span> <span class="dv">60</span>)</span></code></pre></div>
 </div>
 <div id="just-the-canvas" class="section level2">
 <h2>Just the canvas</h2>
@@ -366,11 +387,11 @@ equal-area and good-looking), <code>&quot;robinson&quot;</code>,
 antimeridian-safe geometry without any data — country polygons,
 label-ready centroids, coastlines, a graticule or an ocean
 rectangle:</p>
-<div class="sourceCode" id="cb3"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb3-1"><a href="#cb3-1" tabindex="-1"></a>africa <span class="ot">&lt;-</span> <span class="fu">world_geometry</span>(<span class="st">&quot;countries&quot;</span>, <span class="at">geometry =</span> <span class="st">&quot;sf&quot;</span>, <span class="at">region =</span> <span class="st">&quot;Africa&quot;</span>,</span>
-<span id="cb3-2"><a href="#cb3-2" tabindex="-1"></a>                         <span class="at">projection =</span> <span class="st">&quot;equal_earth&quot;</span>)</span>
-<span id="cb3-3"><a href="#cb3-3" tabindex="-1"></a><span class="fu">ggplot</span>(africa) <span class="sc">+</span></span>
-<span id="cb3-4"><a href="#cb3-4" tabindex="-1"></a>  <span class="fu">geom_sf</span>(<span class="at">fill =</span> <span class="st">&quot;grey85&quot;</span>, <span class="at">colour =</span> <span class="st">&quot;grey40&quot;</span>, <span class="at">linewidth =</span> <span class="fl">0.1</span>) <span class="sc">+</span></span>
-<span id="cb3-5"><a href="#cb3-5" tabindex="-1"></a>  <span class="fu">theme_world_map</span>()</span></code></pre></div>
+<div class="sourceCode" id="cb6"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb6-1"><a href="#cb6-1" tabindex="-1"></a>africa <span class="ot">&lt;-</span> <span class="fu">world_geometry</span>(<span class="st">&quot;countries&quot;</span>, <span class="at">geometry =</span> <span class="st">&quot;sf&quot;</span>, <span class="at">region =</span> <span class="st">&quot;Africa&quot;</span>,</span>
+<span id="cb6-2"><a href="#cb6-2" tabindex="-1"></a>                         <span class="at">projection =</span> <span class="st">&quot;equal_earth&quot;</span>)</span>
+<span id="cb6-3"><a href="#cb6-3" tabindex="-1"></a><span class="fu">ggplot</span>(africa) <span class="sc">+</span></span>
+<span id="cb6-4"><a href="#cb6-4" tabindex="-1"></a>  <span class="fu">geom_sf</span>(<span class="at">fill =</span> <span class="st">&quot;grey85&quot;</span>, <span class="at">colour =</span> <span class="st">&quot;grey40&quot;</span>, <span class="at">linewidth =</span> <span class="fl">0.1</span>) <span class="sc">+</span></span>
+<span id="cb6-5"><a href="#cb6-5" tabindex="-1"></a>  <span class="fu">theme_world_map</span>()</span></code></pre></div>
 <blockquote>
 <p>The live <code>sf</code> map is not shown because <code>sf</code> is
 not installed in this build.</p>
@@ -381,23 +402,38 @@ not installed in this build.</p>
 <p>A Pacific-centred world is one argument away; the <code>sf</code>
 pipeline runs <code>sf::st_break_antimeridian()</code> before
 projecting, so nothing streaks across the frame:</p>
-<div class="sourceCode" id="cb4"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb4-1"><a href="#cb4-1" tabindex="-1"></a><span class="fu">world_geometry</span>(<span class="st">&quot;countries&quot;</span>, <span class="at">geometry =</span> <span class="st">&quot;sf&quot;</span>, <span class="at">recenter =</span> <span class="dv">150</span>)</span></code></pre></div>
+<div class="sourceCode" id="cb7"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb7-1"><a href="#cb7-1" tabindex="-1"></a><span class="fu">world_geometry</span>(<span class="st">&quot;countries&quot;</span>, <span class="at">geometry =</span> <span class="st">&quot;sf&quot;</span>, <span class="at">recenter =</span> <span class="dv">150</span>)</span></code></pre></div>
 </div>
 <div id="region-subsetting" class="section level2">
 <h2>Region subsetting</h2>
 <p><code>region</code> accepts a continent, a group name
 (<code>&quot;EU&quot;</code>, <code>&quot;OECD&quot;</code>, …), a vector of
 <code>iso3c</code> codes, or a bounding box
-<code>c(xmin, ymin, xmax, ymax)</code>, and picks a sensible projection
-for it.</p>
+<code>c(xmin, ymin, xmax, ymax)</code>. Pair it with a
+<code>projection</code> suited to the subset
+(e.g. <code>&quot;azimuthal_equal_area&quot;</code> for a single continent, the
+polar projections for the Arctic) so the crop stays area-honest.</p>
+<p>A box is the one form that clips the shapes themselves, which is what
+you want for a region that is neither a continent nor a group — the
+Mediterranean basin, say. Use the <code>sf</code> backend for it: that
+clip is a real <code>sf::st_crop()</code>, whereas the polygon backend
+can only drop the vertices outside the box and warns that a country
+crossing the edge comes back with an approximate outline.</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb8-1"><a href="#cb8-1" tabindex="-1"></a>med <span class="ot">&lt;-</span> <span class="fu">world_geometry</span>(<span class="st">&quot;countries&quot;</span>, <span class="at">geometry =</span> <span class="st">&quot;sf&quot;</span>,</span>
+<span id="cb8-2"><a href="#cb8-2" tabindex="-1"></a>                      <span class="at">region =</span> <span class="fu">c</span>(<span class="sc">-</span><span class="dv">10</span>, <span class="dv">30</span>, <span class="dv">40</span>, <span class="dv">48</span>), <span class="at">projection =</span> <span class="st">&quot;equal_earth&quot;</span>)</span>
+<span id="cb8-3"><a href="#cb8-3" tabindex="-1"></a><span class="fu">ggplot</span>(med) <span class="sc">+</span></span>
+<span id="cb8-4"><a href="#cb8-4" tabindex="-1"></a>  <span class="fu">geom_sf</span>(<span class="at">fill =</span> <span class="st">&quot;grey85&quot;</span>, <span class="at">colour =</span> <span class="st">&quot;grey40&quot;</span>, <span class="at">linewidth =</span> <span class="fl">0.1</span>) <span class="sc">+</span></span>
+<span id="cb8-5"><a href="#cb8-5" tabindex="-1"></a>  <span class="fu">theme_world_map</span>()</span></code></pre></div>
 </div>
 <div id="simplifying-for-the-web" class="section level2">
 <h2>Simplifying for the web</h2>
 <p>High-resolution geometry can be thinned for fast plotting with
 <code>simplify_geometry()</code> (which uses <code>rmapshaper</code>
-when available).</p>
-<div class="sourceCode" id="cb5"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" tabindex="-1"></a><span class="fu">world_geometry</span>(<span class="at">geometry =</span> <span class="st">&quot;sf&quot;</span>, <span class="at">scale =</span> <span class="st">&quot;large&quot;</span>) <span class="sc">|&gt;</span></span>
-<span id="cb5-2"><a href="#cb5-2" tabindex="-1"></a>  <span class="fu">simplify_geometry</span>(<span class="at">keep =</span> <span class="fl">0.1</span>)</span></code></pre></div>
+when available). <code>scale = &quot;medium&quot;</code> is the 50m Natural Earth
+data; <code>&quot;large&quot;</code> is 10m and additionally needs the
+<code>rnaturalearthhires</code> package, which is not on CRAN.</p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb9-1"><a href="#cb9-1" tabindex="-1"></a><span class="fu">world_geometry</span>(<span class="at">geometry =</span> <span class="st">&quot;sf&quot;</span>, <span class="at">scale =</span> <span class="st">&quot;medium&quot;</span>) <span class="sc">|&gt;</span></span>
+<span id="cb9-2"><a href="#cb9-2" tabindex="-1"></a>  <span class="fu">simplify_geometry</span>(<span class="at">keep =</span> <span class="fl">0.1</span>)</span></code></pre></div>
 </div>
 
 

@@ -23,6 +23,9 @@ world_map(data_2020, income, style = "categorical")
 ## -----------------------------------------------------------------------------
 head(common_indicators)
 
+## -----------------------------------------------------------------------------
+head(wdi_search("renewable energy"))
+
 ## ----eval = FALSE-------------------------------------------------------------
 # country_data(2020, c(life_exp = "SP.DYN.LE00.IN", pop = "SP.POP.TOTL"))
 

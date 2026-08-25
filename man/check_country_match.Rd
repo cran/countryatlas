@@ -7,7 +7,7 @@
 check_country_match(
   x,
   origin = "country.name",
-  custom_match = wdj_overrides(),
+  custom_match = country_overrides(),
   suggest = TRUE
 )
 }
@@ -17,20 +17,34 @@ check_country_match(
 \item{origin}{How to read \code{x} (any countrycode origin scheme).}
 
 \item{custom_match}{Overrides applied before matching (default
-\code{\link[=wdj_overrides]{wdj_overrides()}}).}
+\code{\link[=country_overrides]{country_overrides()}}).}
 
 \item{suggest}{Whether to compute closest-name suggestions for misses
 (requires the optional \code{stringdist} package; default \code{TRUE}).}
 }
 \value{
-A tibble with columns \code{input}, \code{iso3c}, \code{matched}, \code{suggestion}.
+A tibble with columns \code{input}, \code{iso3c}, \code{matched}, \code{historical},
+\code{suggestion}.
 }
 \description{
 A report on what will and will not match before you trust the map: the
-input, its \code{iso3c}, whether it \code{matched}, and a \code{suggestion} (the closest
-known country name by string distance) for misses. Surfaced automatically by
-\code{\link[=join_world]{join_world()}}.
+input, its \code{iso3c}, whether it \code{matched}, whether it is a \code{historical}
+(dissolved) entity, and a \code{suggestion} (the closest known country name by
+string distance) for misses. Surfaced automatically by \code{\link[=join_world]{join_world()}}.
+}
+\details{
+The \code{historical} flag matters even for rows that \emph{matched}: countrycode
+silently resolves \code{"USSR"} to Russia's \code{RUS}, so Soviet-era data becomes
+Russian data without a warning. Rows flagged \code{historical} should usually be
+routed through \code{\link[=dissolve_country]{dissolve_country()}} instead.
 }
 \examples{
 check_country_match(c("USA", "Cote d'Ivoire", "Yugoslavia", "Wakanda"))
+# "USSR" matches (to RUS!) but is flagged historical:
+check_country_match("USSR")
+}
+\seealso{
+\code{\link[=dissolve_country]{dissolve_country()}} for resolving the entities this flags as
+\code{historical} to their successor states, and \code{\link[=repair_country_names]{repair_country_names()}} for
+applying the \code{suggestion} column automatically.
 }

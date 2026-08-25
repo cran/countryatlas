@@ -3,7 +3,6 @@ title: "countryatlas: Joining World Data to Maps on the ISO Spine"
 author: |
   Youzhi Yu
   <span style="font-size: 0.8em;">University of Chicago</span>
-date: "`r format(Sys.Date(), '%B %e, %Y')`"
 output:
   rmarkdown::html_vignette:
     toc: true
@@ -40,10 +39,11 @@ entities. **countryatlas** resolves this friction by adopting ISO 3166 codes as
 a universal join key and by stitching together three otherwise disjoint
 resources — map geometry, World Bank development indicators, and a comprehensive
 country-code crosswalk — into a single, map-ready table. This vignette presents
-the package's design philosophy, its complete functional vocabulary, and worked
+the package's design philosophy, its core functional vocabulary, and worked
 examples spanning data assembly, the join engine, diagnostics, reference data,
-analysis helpers and a full grammar of honest cartographic displays. All
-examples run offline against a bundled data snapshot.
+analysis helpers and the grammar of honest cartographic displays — the
+companion vignettes take up the remaining map types, projections and query
+interface in detail. All examples run offline against a bundled data snapshot.
 
 # Introduction
 
@@ -184,12 +184,19 @@ country_join(left, right, country, nation)
 
 # Diagnostics: never lose a country silently
 
-`check_country_match()` is a pre-flight report; `wdj_overrides()` is the curated
-match table that replaces the old drop-list; and `audit_coverage()` reports
-missingness before a half-empty map is published.
+`check_country_match()` is a pre-flight report; `country_overrides()` is the
+curated match table that replaces the old drop-list; and `audit_coverage()`
+reports missingness before a half-empty map is published.
 
 ```{r}
 check_country_match(c("USA", "Cote d'Ivoire", "Yugoslavia", "Wakanda"))
+```
+
+`repair_country_names()` acts on that report: it substitutes the closest known
+country name for confident misses only, and attaches a record of every change:
+
+```{r}
+repair_country_names(c("Brzil", "Germny", "United States"), verbose = FALSE)
 ```
 
 ```{r}
@@ -203,6 +210,17 @@ Islands and a dozen others — are now matched:
 dropped <- c("Kosovo", "Micronesia", "Virgin Islands", "Canary Islands",
              "Saint Martin")
 standardize_country(data.frame(region = dropped), region, warn = FALSE)
+```
+
+Dissolved entities get first-class treatment too. The `historical` column of
+`check_country_match()` flags them — including `"USSR"`, which countrycode
+silently resolves to Russia's `RUS` (so Soviet-era data becomes Russian data
+without a warning) — and `dissolve_country()` expands them to their successor
+states via the curated `historical_codes` crosswalk:
+
+```{r}
+check_country_match(c("USSR", "Czechoslovakia"))
+dissolve_country("Yugoslavia")
 ```
 
 # Reference data and code translation
@@ -222,14 +240,36 @@ country_groups("G7")
 in_group(c("France", "United States", "Japan", "Brazil"), "EU")
 ```
 
+The whole `countrycode` codelist is exposed as a tidy, pipeable lookup with
+`country_codes()`, and the World Bank indicator catalogue is searchable offline
+with `wdi_search()`:
+
+```{r}
+head(country_codes(c("continent", "currency")))
+head(wdi_search("renewable energy"), 3)
+```
+
 The package also bundles `country_meta` (static per-country attributes),
-`common_indicators` (a friendly indicator catalogue), `country_groups_tbl` and
-`world_tiles`.
+`common_indicators` (a friendly indicator catalogue), `country_groups_tbl`,
+`world_tiles` and `historical_codes` (the dissolved-entity crosswalk used
+above).
 
 # Analysis helpers
 
 Small, in-spirit transforms that keep an analysis from leaving the package
-mid-pipeline:
+mid-pipeline. `per_capita()` disarms the commonest footgun in this data — *is
+this map just a population map?* — by normalising a total before it is plotted.
+Supply the denominator, or omit it and the relevant years of `SP.POP.TOTL` are
+fetched for you:
+
+```{r}
+emissions <- data.frame(
+  iso3c = c("USA", "CHN", "IND"),
+  co2   = c(4.7e6, 1.1e7, 2.7e6),      # total kt
+  pop   = c(331e6, 1412e6, 1408e6)
+)
+per_capita(emissions, co2, pop)
+```
 
 ```{r}
 snapshot |>
@@ -242,6 +282,60 @@ snapshot |>
 snapshot |>
   aggregate_regions(population, by = "region", fun = "sum")
 ```
+
+For panel data, `growth_rate()` (year-on-year or CAGR), `index_to()` (rebase a
+series so the base year = 100) and `share_of_world()` (share of the year's
+world total) cover the standard comparative moves, each computed per country:
+
+```{r}
+panel <- data.frame(
+  iso3c = rep(c("USA", "CHN"), each = 3),
+  year  = rep(2019:2021, 2),
+  gdp   = c(100, 104, 109, 60, 66, 73)
+)
+panel |>
+  growth_rate(gdp) |>
+  index_to(gdp, base_year = 2019)
+```
+
+And `complete_years()` fills the panel gaps that would otherwise make an
+animation flicker or a join silently drop years — by grid completion,
+carry-forward or linear interpolation (`lag_by_country()` and
+`diff_by_country()` round out the panel toolkit):
+
+```{r}
+patchy <- data.frame(iso3c = "USA", year = c(2019L, 2021L), gdp = c(100, 110))
+complete_years(patchy, 2019:2021, method = "linear")
+```
+
+## Inequality, correlation and convergence
+
+Three questions this data is constantly asked: *how unequal is the world*,
+*what moves together*, and *are poor countries catching up?* `gini()` and
+`theil()` measure inequality across countries — weight by population and they
+describe inequality between people; `theil()` decomposes exactly into
+between/within components:
+
+```{r}
+gini(snapshot$gdp_per_capita, weights = snapshot$population)
+theil(snapshot$gdp_per_capita, weights = snapshot$population,
+      groups = snapshot$continent)
+```
+
+`correlate_indicators()` screens indicator pairs (pairwise-complete, with the
+per-pair `n` reported so a correlation computed on 12 countries cannot
+masquerade as a world fact):
+
+```{r}
+correlate_indicators(snapshot)
+```
+
+For panels, `beta_convergence()` runs the classic growth-on-initial-level
+regression (returning the implied convergence speed and half-life) and
+`sigma_convergence()` tracks whether cross-country dispersion is actually
+narrowing. And on the spatial side, `morans_i()` measures whether neighbouring
+countries have similar values, using the package's own `country_borders()`
+adjacency — no `spdep` needed.
 
 # Performance and offline use
 

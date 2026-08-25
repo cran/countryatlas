@@ -6,6 +6,9 @@ knitr::opts_chunk$set(
 library(countryatlas)
 library(ggplot2)
 library(dplyr)
+has_sf <- requireNamespace("sf", quietly = TRUE) &&
+  requireNamespace("rnaturalearth", quietly = TRUE) &&
+  requireNamespace("rnaturalearthdata", quietly = TRUE)
 
 ## -----------------------------------------------------------------------------
 my_data <- data.frame(
@@ -26,12 +29,30 @@ b <- data.frame(nation  = c("Czech Republic", "Korea, Rep.", "Russian Federation
 country_join(a, b, country, nation)
 
 ## -----------------------------------------------------------------------------
+t1 <- data.frame(country = c("Czechia", "South Korea"), gdp = c(1, 2))
+t2 <- data.frame(country = c("Czech Republic", "Korea, Rep."), pop = c(10, 51))
+t3 <- data.frame(country = c("Czechia", "Korea"), area = c(79, 100))
+country_join_all(list(t1, t2, t3), by = "country")
+
+## -----------------------------------------------------------------------------
 check_country_match(my_data$nation)
 
 ## -----------------------------------------------------------------------------
-wdj_overrides(c(Somaliland = "SOM"))[c("Kosovo", "Somaliland")]
+check_country_match(c("USSR", "Yugoslavia", "West Germany"))
+dissolve_country(c("Czechoslovakia", "France"))
+
+## -----------------------------------------------------------------------------
+fixed <- repair_country_names(c("Brzil", "Nehterlands", "United States"),
+                              verbose = FALSE)
+fixed
+
+## -----------------------------------------------------------------------------
+country_overrides(c(Somaliland = "SOM"))[c("Kosovo", "Somaliland")]
 
 ## -----------------------------------------------------------------------------
 df <- data.frame(code = c("US", "KR", "BR"))
 standardize_country(df, code, origin = "iso2c", warn = FALSE)
+
+## ----eval = has_sf------------------------------------------------------------
+# locate_country(lon = c(2.35, -74.0, 139.7), lat = c(48.85, 40.7, 35.7))
 

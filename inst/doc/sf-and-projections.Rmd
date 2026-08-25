@@ -15,7 +15,10 @@ knitr::opts_chunk$set(
 library(countryatlas)
 library(ggplot2)
 has_sf <- requireNamespace("sf", quietly = TRUE) &&
-  requireNamespace("rnaturalearth", quietly = TRUE)
+  requireNamespace("rnaturalearth", quietly = TRUE) &&
+  requireNamespace("rnaturalearthdata", quietly = TRUE)
+has_globe <- requireNamespace("maps", quietly = TRUE) &&
+  requireNamespace("mapproj", quietly = TRUE)
 ```
 
 The legacy `maps` polygons are an unprojected plate carrée: they badly distort
@@ -37,9 +40,35 @@ world_data(2020, c(gdp = "NY.GDP.PCAP.KD"), geometry = "sf") |>
 ```
 
 `world_map()` auto-detects the `sf` backend and applies the projection through
-`ggplot2::coord_sf()`. Available projections include `"equal_earth"` (the
-default — equal-area and good-looking), `"robinson"`, `"mollweide"`,
-`"natural_earth"` and `"plate_carree"`.
+`ggplot2::coord_sf()`. Available projections are `"equal_earth"` (the default —
+equal-area and good-looking), `"robinson"`, `"mollweide"`, `"natural_earth"`,
+`"plate_carree"`, `"mercator"`, `"winkel_tripel"`, `"eckert4"`, `"gall_peters"`,
+`"orthographic"`, `"azimuthal_equal_area"`, `"north_polar"` and `"south_polar"`.
+
+## The world as a globe
+
+`globe_map()` draws an orthographic globe centred on `lon`/`lat`. The default
+`"sf"` backend gives the cleanest limb; the `"polygon"` backend below needs only
+`maps` + `mapproj` (no `sf`):
+
+```{r globe, eval = has_globe, fig.width = 5.5, fig.height = 5}
+globe_map(world_snapshot$countries, continent, backend = "polygon",
+          style = "categorical", lon = 10, lat = 20)
+```
+
+```{r eval = FALSE}
+# With the sf backend (smoother limb, real great circles):
+world_data(2020, geometry = "sf") |>
+  globe_map(gdp_per_capita, lon = 10, lat = 30)
+```
+
+`spin_globe()` turns that into a rotating animation — one `globe_map()` frame per
+central longitude, assembled into a looping GIF with `gifski` (or `magick`):
+
+```{r eval = FALSE}
+spin_globe(world_snapshot$countries, continent, backend = "polygon",
+           style = "categorical", n_frames = 60)
+```
 
 ## Just the canvas
 
@@ -72,15 +101,32 @@ world_geometry("countries", geometry = "sf", recenter = 150)
 ## Region subsetting
 
 `region` accepts a continent, a group name (`"EU"`, `"OECD"`, …), a vector of
-`iso3c` codes, or a bounding box `c(xmin, ymin, xmax, ymax)`, and picks a
-sensible projection for it.
+`iso3c` codes, or a bounding box `c(xmin, ymin, xmax, ymax)`. Pair it with a
+`projection` suited to the subset (e.g. `"azimuthal_equal_area"` for a single
+continent, the polar projections for the Arctic) so the crop stays area-honest.
+
+A box is the one form that clips the shapes themselves, which is what you want
+for a region that is neither a continent nor a group — the Mediterranean basin,
+say. Use the `sf` backend for it: that clip is a real `sf::st_crop()`, whereas
+the polygon backend can only drop the vertices outside the box and warns that a
+country crossing the edge comes back with an approximate outline.
+
+```{r eval = has_sf}
+med <- world_geometry("countries", geometry = "sf",
+                      region = c(-10, 30, 40, 48), projection = "equal_earth")
+ggplot(med) +
+  geom_sf(fill = "grey85", colour = "grey40", linewidth = 0.1) +
+  theme_world_map()
+```
 
 ## Simplifying for the web
 
 High-resolution geometry can be thinned for fast plotting with
-`simplify_geometry()` (which uses `rmapshaper` when available).
+`simplify_geometry()` (which uses `rmapshaper` when available). `scale =
+"medium"` is the 50m Natural Earth data; `"large"` is 10m and additionally
+needs the `rnaturalearthhires` package, which is not on CRAN.
 
 ```{r eval = FALSE}
-world_geometry(geometry = "sf", scale = "large") |>
+world_geometry(geometry = "sf", scale = "medium") |>
   simplify_geometry(keep = 0.1)
 ```

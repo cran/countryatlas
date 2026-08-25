@@ -68,12 +68,19 @@ country_join(left, right, country, nation)
 check_country_match(c("USA", "Cote d'Ivoire", "Yugoslavia", "Wakanda"))
 
 ## -----------------------------------------------------------------------------
+repair_country_names(c("Brzil", "Germny", "United States"), verbose = FALSE)
+
+## -----------------------------------------------------------------------------
 audit_coverage(snapshot)$na_rates
 
 ## -----------------------------------------------------------------------------
 dropped <- c("Kosovo", "Micronesia", "Virgin Islands", "Canary Islands",
              "Saint Martin")
 standardize_country(data.frame(region = dropped), region, warn = FALSE)
+
+## -----------------------------------------------------------------------------
+check_country_match(c("USSR", "Czechoslovakia"))
+dissolve_country("Yugoslavia")
 
 ## -----------------------------------------------------------------------------
 convert_country(c("Japan", "Brazil", "Germany"), to = "flag")
@@ -84,6 +91,18 @@ country_groups("G7")
 in_group(c("France", "United States", "Japan", "Brazil"), "EU")
 
 ## -----------------------------------------------------------------------------
+head(country_codes(c("continent", "currency")))
+head(wdi_search("renewable energy"), 3)
+
+## -----------------------------------------------------------------------------
+emissions <- data.frame(
+  iso3c = c("USA", "CHN", "IND"),
+  co2   = c(4.7e6, 1.1e7, 2.7e6),      # total kt
+  pop   = c(331e6, 1412e6, 1408e6)
+)
+per_capita(emissions, co2, pop)
+
+## -----------------------------------------------------------------------------
 snapshot |>
   rank_countries(gdp_per_capita) |>
   filter(rank <= 5) |>
@@ -92,6 +111,28 @@ snapshot |>
 ## -----------------------------------------------------------------------------
 snapshot |>
   aggregate_regions(population, by = "region", fun = "sum")
+
+## -----------------------------------------------------------------------------
+panel <- data.frame(
+  iso3c = rep(c("USA", "CHN"), each = 3),
+  year  = rep(2019:2021, 2),
+  gdp   = c(100, 104, 109, 60, 66, 73)
+)
+panel |>
+  growth_rate(gdp) |>
+  index_to(gdp, base_year = 2019)
+
+## -----------------------------------------------------------------------------
+patchy <- data.frame(iso3c = "USA", year = c(2019L, 2021L), gdp = c(100, 110))
+complete_years(patchy, 2019:2021, method = "linear")
+
+## -----------------------------------------------------------------------------
+gini(snapshot$gdp_per_capita, weights = snapshot$population)
+theil(snapshot$gdp_per_capita, weights = snapshot$population,
+      groups = snapshot$continent)
+
+## -----------------------------------------------------------------------------
+correlate_indicators(snapshot)
 
 ## -----------------------------------------------------------------------------
 sessionInfo()

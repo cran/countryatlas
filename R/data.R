@@ -2,23 +2,25 @@
 
 #' Offline snapshot of world data
 #'
-#' A small, lazy-loaded snapshot of a curated indicator set for one recent year,
-#' as both a country-level tibble and a low-resolution `sf` object. It lets every
-#' example, test and vignette run offline and deterministically, without the
-#' World Bank API.
+#' A small, lazy-loaded, one-row-per-country snapshot of a curated indicator
+#' set for one recent year. It lets every example, test and vignette run
+#' offline and deterministically, without the World Bank API.
 #'
-#' @format A list with two elements:
+#' @format A list with three elements:
 #' \describe{
 #'   \item{countries}{A tibble, one row per country, with `iso3c`, `iso2c`,
 #'     `country`, classifications and curated indicators
 #'     (`gdp_per_capita`, `population`, `life_expectancy`, `co2_per_capita`).}
-#'   \item{sf}{A low-resolution `sf` object with the same per-country columns and
-#'     a `geometry` column (Natural Earth 110m). Present only if `sf` was
-#'     available when the package was built.}
+#'   \item{sf}{`NULL` in the released package -- geometry is not bundled twice.
+#'     Attach it on demand with [attach_geometry()]:
+#'     `attach_geometry(world_snapshot$countries, geometry = "sf")` pulls the
+#'     same Natural Earth 110m polygons from `rnaturalearth`.}
 #'   \item{year}{The reference year.}
 #' }
+#'   `country` carries the World Bank's own names, which differ from the
+#'   `countrycode` names used by [country_meta] for 38 countries.
 #' @source World Bank via \pkg{WDI}; geometry from Natural Earth via
-#'   \pkg{rnaturalearth}.
+#'   \pkg{rnaturalearth}. Snapshot year: 2024.
 "world_snapshot"
 
 #' Static per-country metadata
@@ -30,6 +32,20 @@
 #'   `iso2c`, `country`, `continent`, `region`, `un_region`, `capital`,
 #'   `capital_lat`, `capital_lon`, `centroid_lat`, `centroid_lon`, `area_km2`,
 #'   `currency`, `tld`, `landlocked`, `flag`.
+#'
+#'   Assembled from [countrycode::codelist], so Kosovo (`XKX`) has no row --
+#'   `countrycode` has none either. The geometry backends and
+#'   [convert_country()] do handle it; [distance_between()], which reads its
+#'   centroids from here, does not. Ten further territories have a row but no
+#'   centroid or area.
+#'
+#'   `country` therefore carries the English names from `countrycode`
+#'   ("South Korea", "Congo - Kinshasa"), which differ from the World Bank's for
+#'   38 of the 215 countries in [world_snapshot] ("Korea, Rep.",
+#'   "Congo, Dem. Rep."). Each
+#'   table is faithful to its own source, so join on `iso3c` and keep whichever
+#'   label you want to display -- reconciling the two is what [country_join()]
+#'   is for.
 #' @source Assembled from \pkg{countrycode}, \pkg{WDI} metadata and Natural
 #'   Earth geometry.
 "country_meta"
@@ -58,6 +74,37 @@
 #' A statebins-style equal-area tile layout: one square per country, positioned
 #' on a `row`/`col` grid derived from country centroids. Used by [tile_map()].
 #'
-#' @format A tibble with columns `iso3c`, `country`, `row`, `col`.
+#' The grid holds one row for each of the 239 countries in [country_meta] that
+#' has a bundled centroid; the 10 without one (`ALA`, `BVT`, `GIB`, `HKG`,
+#' `MAC`, `SJM`, `TKL`, `TUV`, `UMI`, `VGB` -- see [country_meta]) have no tile
+#' and so cannot be drawn by [tile_map()].
+#'
+#' @format A tibble with columns `iso3c`, `country`, `row`, `col`; one row per
+#'   country, with `row`/`col` unique across the grid.
 #' @source Derived from Natural Earth country centroids.
 "world_tiles"
+
+#' Historical / dissolved entities and their successor states
+#'
+#' A curated crosswalk from dissolved entities (Soviet Union, Yugoslavia,
+#' Czechoslovakia, ...) to the modern states that succeeded them -- one row per
+#' (entity, successor) pair, dated, so historical panels can be brought onto
+#' the modern ISO spine honestly instead of being silently dropped (or worse:
+#' `countrycode` resolves `"USSR"` to Russia alone). Consumed by
+#' [dissolve_country()] and flagged by [check_country_match()].
+#'
+#' Kosovo (`XKX`) is included among the Yugoslavia and Serbia-and-Montenegro
+#' successors on a *territory* basis (its territory was part of both); filter
+#' it out if your analysis follows strict UN-membership succession.
+#'
+#' @format A tibble with one row per (entity, successor):
+#' \describe{
+#'   \item{historical}{Canonical name of the dissolved entity.}
+#'   \item{iso3c_hist}{The alpha-3 code the entity held at dissolution, where
+#'     one existed (`SUN`, `YUG`, `CSK`, `DDR`, `ANT`, `SCG`, `YMD`, ...); it
+#'     may since have been inherited by a successor (e.g. `YEM`).}
+#'   \item{dissolved}{Year the entity ceased to exist.}
+#'   \item{iso3c, country}{The successor state.}
+#' }
+#' @source Curated from ISO 3166-3 and the historical record.
+"historical_codes"
