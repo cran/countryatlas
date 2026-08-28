@@ -1,13 +1,13 @@
-24398ad37819faf24f2ab4be7dbe3264 *DESCRIPTION
+e978ac0ef79fa25fc40ff2c5c1044419 *DESCRIPTION
 87e43348d923c9b60964492e257a149e *NAMESPACE
-684fc395247339ac91fdf1b7b6ce7959 *NEWS.md
+e43cf77776289ef1646936d402b57b2c *NEWS.md
 38e499753704b0d6a7a3c8e518638a52 *R/analysis.R
-2cf204a324d262f36c5184cd51081661 *R/cache.R
+0616604577667a3df6fb2cccb946abd5 *R/cache.R
 0ff857648154314bcb59989a5b87d87c *R/countryatlas-package.R
 58b1a0f979893c1655a27080b063a451 *R/data.R
 0bf0aa838e8582df6914ba777d2220e2 *R/diagnostics.R
 618e11e9d5adf9d913dea6d5cff06ef0 *R/geometry.R
-5df622a55e1132c1329828f892e2d161 *R/ggsql.R
+05e9f95257340b100c19c25938de6b5d *R/ggsql.R
 466693e81b34ad2d623a140b9def1f7f *R/historical.R
 3b33e24a7f18bf5fb5d5afb3112e14d2 *R/join.R
 1ff41afcedbeecdbc1d202258872ca9b *R/overrides.R
@@ -32,7 +32,7 @@ fe7da94149cf9698b89ab3582c7ab4ea *inst/doc/countryatlas-and-ggsql.R
 6dcc9c3aa39a1ad4f657d636635e60ec *inst/doc/countryatlas-and-ggsql.html
 3ee88db3207c9aee11a393f69be66e09 *inst/doc/countryatlas.R
 634a539f708e58f907fb6207c4e63da8 *inst/doc/countryatlas.Rmd
-2fd5f0185783f9071fffd7f920568b5e *inst/doc/countryatlas.html
+573a213ca178eb88314ebc37fa68dfe8 *inst/doc/countryatlas.html
 e6cc6f34339b8fd10604aff3c7279674 *inst/doc/getting-started.R
 c8e6887570c33cc6635b81d3db115866 *inst/doc/getting-started.Rmd
 0f62727321a9df100a816e7a4ae2277b *inst/doc/getting-started.html
@@ -52,7 +52,7 @@ e6a03eba3c90ed787f4884a64fd4e270 *man/animate_world.Rd
 0d2ce771cbd700a3a326a66cd3fe9c22 *man/bubble_map.Rd
 7536e13c4153042aefc50a3893decc2c *man/cartogram_map.Rd
 f4a0d8a8ec57bfbf8fa183710861b4ad *man/check_country_match.Rd
-1a19b4cd3fd30798223d3aeabb21d2bd *man/clear_wdi_cache.Rd
+c3ee64dee97f638734615f97ca76cc0b *man/clear_wdi_cache.Rd
 e8e7d3b43e0bbcbaf5695900b5bfe1ef *man/common_indicators.Rd
 dda42c1dd13ed64aded546a7d1ef2ad4 *man/complete_years.Rd
 2ea616152b970dd214a1a5c92fa339d3 *man/convert_country.Rd
@@ -115,6 +115,7 @@ dec3a161556a4d018e334d97a85d70ea *man/world_tiles.Rd
 7b4c517bc7b6aa20cba60a46472d50e2 *tests/testthat/helper-geometry.R
 5c5dcb41be0c30fe5d4f5850ea0836ea *tests/testthat/helper-net.R
 acd89d38d115dd8f76553822f41802c7 *tests/testthat/helper-source.R
+57b556b3b2a800dd9bf9efa6d639821f *tests/testthat/setup-user-dirs.R
 18d9912a5cadce69eecaa15e20562977 *tests/testthat/test-analysis.R
 5816ec83c18c123c383ac1c599245cad *tests/testthat/test-arg-validation.R
 66d9b56329c84a9cae0bfc2d9d3c270e *tests/testthat/test-data-integrity.R
@@ -132,7 +133,7 @@ f02a729ad2cecda5e3a5fc058a4c03d5 *tests/testthat/test-numeric-anchors.R
 21fb30d696b8883d63bfe53aa6179587 *tests/testthat/test-reference.R
 4f271c1ac09cadcfc7f1eb4f0c062589 *tests/testthat/test-return-contracts.R
 190ea3f8c137f5b8e6aa1d3b1969b1f4 *tests/testthat/test-second-wave.R
-b9a9abaf77e1d462917c1280e171e72b *tests/testthat/test-standardize.R
+9c25f607705f518c2502e49f5fd1cd61 *tests/testthat/test-standardize.R
 8a7c14b9bcfd8fa2786721e81e577b10 *tests/testthat/test-untested-exports.R
 19a62f78e620660ed0b4746a7fbe3f4d *tests/testthat/test-visualization.R
 1ec42510e5005443ee579b8422262e22 *tests/testthat/test-world-data.R

@@ -1,7 +1,7 @@
 Package: countryatlas
 Type: Package
 Title: Join World Bank Data, Country Codes and Maps on the ISO Spine
-Version: 2.0.0
+Version: 2.0.1
 Authors@R: 
     person(given = "Youzhi",
            family = "Yu",
@@ -37,14 +37,13 @@ Suggests: biscale, cartogram, classInt, covr, DBI, duckdb, gganimate,
         ggiraph, ggrepel, ggsql, gifski, knitr, leaflet, magick,
         mapproj, maps, nanoarrow, plotly, rmapshaper, rmarkdown,
         rnaturalearth, rnaturalearthdata, scales, sf, stringdist,
-        testthat (>= 3.0.0)
+        testthat (>= 3.0.0), withr
 VignetteBuilder: knitr
 Config/testthat/edition: 3
-Config/roxygen2/version: 8.0.0
 RoxygenNote: 7.3.2
 NeedsCompilation: no
-Packaged: 2026-08-24 16:22:01 UTC; youzhi
+Packaged: 2026-08-25 19:57:43 UTC; youzhi
 Author: Youzhi Yu [aut, cre]
 Maintainer: Youzhi Yu <yuyouzhi666@icloud.com>
 Repository: CRAN
-Date/Publication: 2026-08-25 05:10:02 UTC
+Date/Publication: 2026-08-28 14:50:08 UTC
