@@ -6,6 +6,7 @@
 snap <- countryatlas::world_snapshot$countries
 
 test_that("check_number names the argument and the range", {
+  skip_slow_on_cran()
   cn <- countryatlas:::check_number
   expect_error(cn(NA, "k"), "single finite number")
   expect_error(cn(NA_real_, "k"), class = "countryatlas_error")
@@ -21,6 +22,7 @@ test_that("check_number names the argument and the range", {
 })
 
 test_that("n_bins is validated on every style path", {
+  skip_slow_on_cran()
   skip_if_not_installed("maps")
   mapdf <- attach_geometry(snap, geometry = "polygon")
   # quantile/jenks go through compute_breaks(); binned hands n_bins straight to
@@ -35,6 +37,7 @@ test_that("n_bins is validated on every style path", {
 })
 
 test_that("wdj_crs refuses a latitude PROJ cannot build a CRS from", {
+  skip_slow_on_cran()
   # |lat_0| >= 90 built a string PROJ rejects, and the failure only surfaced
   # later as coord_sf()'s "crs not found: is it missing?".
   expect_error(countryatlas:::wdj_crs("orthographic", lat0 = 200), "`lat0`")
@@ -63,6 +66,7 @@ test_that("globe_map validates lon/lat on both backends", {
 })
 
 test_that("plot scalars that would draw nonsense are rejected", {
+  skip_slow_on_cran()
   skip_if_not_installed("maps")
   # A negative max_height silently drew the spikes upside down.
   expect_error(spike_map(snap, population, max_height = -5), "`max_height`")
@@ -77,6 +81,7 @@ test_that("plot scalars that would draw nonsense are rejected", {
 })
 
 test_that("analysis and diagnostic scalars are validated", {
+  skip_slow_on_cran()
   expect_error(repair_country_names("Brzil", threshold = 5), "between 0 and 1")
   expect_error(repair_country_names("Brzil", threshold = NA),
                "single finite number")
@@ -100,23 +105,24 @@ test_that("complete_years rejects a value column that isn't there", {
 })
 
 test_that("morans_i validates n_perm", {
+  skip_slow_on_cran()
   # need_pkg("sf") runs before the scalar check.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   expect_error(morans_i(snap, gdp_per_capita, n_perm = -5), "`n_perm`")
   expect_error(morans_i(snap, gdp_per_capita, n_perm = NA),
                "single finite number")
 })
 
 test_that("simplify_geometry validates keep", {
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_slow_on_cran()
+  skip_if_no_sf_geometry()
   g <- world_geometry("countries", geometry = "sf")
   expect_error(simplify_geometry(g, keep = 1.5), "between 0 and 1")
   expect_error(simplify_geometry(g, keep = NA), "single finite number")
 })
 
 test_that("count arguments are bounded so as.integer() cannot make them NA", {
+  skip_slow_on_cran()
   # check_number() only required a finite number, but several call sites then
   # coerce with as.integer(), which returns NA past 2^31-1 -- surfacing as
   # "NAs introduced by coercion" or "missing value where TRUE/FALSE needed".
@@ -137,8 +143,8 @@ test_that("count arguments are bounded so as.integer() cannot make them NA", {
 })
 
 test_that("morans_i bounds n_perm and no longer clamps it redundantly", {
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_slow_on_cran()
+  skip_if_no_sf_geometry()
   snap <- countryatlas::world_snapshot$countries
   expect_error(morans_i(snap, gdp_per_capita, n_perm = 1e10), "2147483647")
   # n_perm = 0 skips the permutation test; validation admits it.
@@ -150,11 +156,11 @@ test_that("morans_i bounds n_perm and no longer clamps it redundantly", {
 })
 
 test_that("simplify_geometry(keep = 0) is rejected on both backends", {
+  skip_slow_on_cran()
   # rmapshaper requires keep > 0, but the st_simplify() fallback silently
   # accepted 0 (dTolerance = 10000), so the same call errored or not depending
   # on which optional package the caller had.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   g <- world_geometry("countries", geometry = "sf")
   expect_error(simplify_geometry(g, keep = 0), class = "countryatlas_error")
   expect_error(simplify_geometry(g, keep = 0), "greater than 0")
@@ -207,6 +213,7 @@ test_that("the bin count does not depend on whether classInt is installed", {
 # an opaque failure instead of erroring here.
 
 test_that("check_string names the argument and the problem", {
+  skip_slow_on_cran()
   cs <- countryatlas:::check_string
   expect_error(cs(c("a", "b"), "k"), "single string")
   expect_error(cs(c("a", "b"), "k"), "Got 2 values")
@@ -221,6 +228,7 @@ test_that("check_string names the argument and the problem", {
 })
 
 test_that("world_query validates every clause it interpolates", {
+  skip_slow_on_cran()
   for (a in c("source", "draw", "projection", "palette", "transform")) {
     args <- list(quote(gdp)); args[[a]] <- c("x", "y")
     expect_error(do.call(world_query, args), paste0("`", a, "`"))
@@ -268,6 +276,7 @@ test_that("a parquet path is quoted as a SQL literal, not interpolated", {
 # source column in place.
 
 test_that("suffix must be a single non-empty string", {
+  skip_slow_on_cran()
   panel <- data.frame(iso3c = rep(c("USA", "FRA"), each = 4),
                       year = rep(2000:2003, 2), g = c(1:4, 10:13),
                       population = 1e6)
@@ -310,6 +319,7 @@ test_that("join and grouping keys reject a zero-length value", {
 })
 
 test_that("convert_country's to/from must be single strings", {
+  skip_slow_on_cran()
   # `to %in% names(m)` fed if() directly: a length-0 `to` gave base R's
   # "argument is of length zero" and a length-2 one "the condition has length
   # > 1" -- the R >= 4.2 hard error, and neither named the argument. Asking for
@@ -329,21 +339,25 @@ test_that("convert_country's to/from must be single strings", {
 })
 
 test_that("origin is validated once, for every function that resolves names", {
+  skip_slow_on_cran()
   # Checked in wdj_to_iso3c(), the shared internal, so all of these are covered
-  # by one guard. The message says `origin` even where the formal is `origin_x`,
-  # which is the trade-off for fixing them at a single site.
+  # by one guard. The message names the caller's own argument, `origin_x`
+  # included; it used to say `origin` there.
   df <- data.frame(c = "France")
   for (b in list(character(0), c("country.name", "iso3c"), NA)) {
     # Assert our own condition class: countrycode's message for a length-2
     # origin also contains "`origin`", so a text match alone would still pass
     # with the guard removed.
-    for (call in list(
-      function() standardize_country(df, c, origin = b),
-      function() country_join(data.frame(a = "France"), data.frame(b = "France"),
-                              a, b, origin_x = b),
-      function() distance_between("France", "Spain", origin = b))) {
-      expect_error(call(), "`origin`")
-      expect_error(call(), class = "countryatlas_error")
+    cases <- list(
+      list(function() standardize_country(df, c, origin = b), "`origin`"),
+      list(function() country_join(data.frame(a = "France"),
+                                   data.frame(b = "France"),
+                                   a, b, origin_x = b), "`origin_x`"),
+      list(function() distance_between("France", "Spain", origin = b),
+           "`origin`"))
+    for (cs in cases) {
+      expect_error(cs[[1]](), cs[[2]])
+      expect_error(cs[[1]](), class = "countryatlas_error")
     }
   }
   expect_equal(nrow(standardize_country(df, c)), 1L)
@@ -359,6 +373,7 @@ test_that("origin is validated once, for every function that resolves names", {
 # `na.rm = "yes"` kept the NAs and returned NA.
 
 test_that("check_bool names the argument and what it got", {
+  skip_slow_on_cran()
   cb <- countryatlas:::check_bool
   expect_error(cb(NA, "k"), "must be `TRUE` or `FALSE`")
   expect_error(cb(NA, "k"), "Got NA")
@@ -372,6 +387,7 @@ test_that("check_bool names the argument and what it got", {
 })
 
 test_that("borders is validated instead of reaching a bare if()", {
+  skip_slow_on_cran()
   skip_if_not_installed("maps")
   snap <- countryatlas::world_snapshot$countries
   mapdf <- attach_geometry(snap, geometry = "polygon")
@@ -387,6 +403,7 @@ test_that("borders is validated instead of reaching a bare if()", {
 })
 
 test_that("a bad logical no longer silently means FALSE", {
+  skip_slow_on_cran()
   df <- data.frame(iso3c = c("AAA", "BBB", "CCC"), v = c(1, 3, 2))
   for (b in list(NA, character(0), c(TRUE, FALSE), "yes")) {
     expect_error(rank_countries(df, v, desc = b), "`desc`")
@@ -415,6 +432,7 @@ test_that("a bad logical no longer silently means FALSE", {
 # failure mode in the package, so the lengths must line up.
 
 test_that("weights and groups must line up with x", {
+  skip_slow_on_cran()
   x <- 1:10
   for (w in list(c(1, 2), c(1, 2, 3), rep(1, 11), rep(1, 9))) {
     expect_error(gini(x, weights = w), "`weights`")
@@ -438,6 +456,7 @@ test_that("weights and groups must line up with x", {
 })
 
 test_that("complete_years rejects a years vector it cannot use", {
+  skip_slow_on_cran()
   # as.integer("a") is NA with only base R's coercion warning, and a zero-length
   # `years` silently completed nothing.
   df <- data.frame(iso3c = "A", year = c(2000L, 2002L), g = c(1, 3))
@@ -455,6 +474,7 @@ test_that("complete_years rejects a years vector it cannot use", {
 # rest now do too.
 
 test_that("omitting a required argument names that argument", {
+  skip_slow_on_cran()
   skip_if_not_installed("maps")
   snap <- countryatlas::world_snapshot$countries
   mapdf <- attach_geometry(snap, geometry = "polygon")
@@ -477,8 +497,8 @@ test_that("omitting a required argument names that argument", {
                "`from` is required")
   expect_error(world_map(mapdf), class = "countryatlas_error")
   # Optional tidy-eval arguments must stay optional.
-  expect_s3_class(bubble_map(snap, population), "ggplot")
-  expect_s3_class(tile_map(snap, gdp_per_capita), "ggplot")
+  expect_s3_class(suppressWarnings(bubble_map(snap, population)), "ggplot")
+  expect_s3_class(suppressWarnings(tile_map(snap, gdp_per_capita)), "ggplot")
   expect_s3_class(world_map(mapdf, gdp_per_capita), "ggplot")
 })
 
@@ -489,6 +509,7 @@ test_that("omitting a required argument names that argument", {
 # warning, and 2 against 4 recycled cleanly with no warning at all.
 
 test_that("distance_between refuses lengths it would have mis-paired", {
+  skip_slow_on_cran()
   expect_error(distance_between(c("France", "Spain"),
                                 c("Italy", "Germany", "Japan")), "`a`")
   expect_error(distance_between(c("France", "Spain"),
@@ -519,11 +540,11 @@ test_that("distance_between refuses lengths it would have mis-paired", {
 })
 
 test_that("locate_country's documented lon/lat contract matches its code", {
+  skip_slow_on_cran()
   # ?locate_country said lon/lat were "recycled together" while the code has
   # always required equal lengths. The doc now says equal-length; pin the
   # behaviour so the two cannot drift apart again.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   expect_error(locate_country(c(2.3, 10), 48.9), "equal-length")
   expect_error(locate_country(2.3, c(48.9, 50)), "equal-length")
   expect_equal(nrow(locate_country(c(2.3, 10), c(48.9, 50))), 2L)
@@ -538,6 +559,7 @@ test_that("locate_country's documented lon/lat contract matches its code", {
 # (gini), or, worst of all, a plausible-looking result (morans_i).
 
 test_that("a non-numeric value column is rejected by name and type", {
+  skip_slow_on_cran()
   panel <- tibble::tibble(iso3c = rep(c("USA", "FRA"), each = 3),
                           year = rep(2000:2002, 2), g = c(1, 2, 3, 10, 11, 12),
                           region = rep(c("A", "B"), each = 3), population = 1e6)
@@ -574,8 +596,8 @@ test_that("lagging a categorical column is still allowed", {
 })
 
 test_that("morans_i no longer accepts a factor and returns a number anyway", {
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_slow_on_cran()
+  skip_if_no_sf_geometry()
   snap <- countryatlas::world_snapshot$countries
   snap$gg <- factor(round(snap$gdp_per_capita))
   expect_error(morans_i(snap, gg, n_perm = 0), "must be numeric")
@@ -605,12 +627,12 @@ test_that("a factor iso3c changes only row order, never a value", {
 })
 
 test_that("world_map()/globe_map() label and palette arguments are checked", {
+  skip_slow_on_cran()
   # These four reached viridisLite and ggplot2 unchecked, so the failures came
   # back in their vocabulary, not the package's: a length-2 `palette` hit a bare
   # switch() and produced "EXPR must be a length 1 vector", and a numeric one was
   # accepted without a word. world_query() already validated the same arguments.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   snap <- countryatlas::world_snapshot$countries
   sfd <- attach_geometry(snap, geometry = "sf")
 
@@ -639,6 +661,7 @@ test_that("world_map()/globe_map() label and palette arguments are checked", {
 })
 
 test_that("latest= and panel= say which one they are dropping", {
+  skip_slow_on_cran()
   # A year range silently overrode `latest`, while a single year had `latest`
   # silently override `panel` -- opposite precedence, neither announced.
   fake <- function(country, indicator, start, end, extra = FALSE, ...) {
@@ -682,6 +705,7 @@ test_that("latest= and panel= say which one they are dropping", {
 # the frame's shape, so a class-only expectation passes whatever k is.
 
 test_that("locate_country validates tolerance_km", {
+  skip_slow_on_cran()
   # `dkm <= tolerance_km` compares as *strings* when the tolerance is character,
   # and "2650" <= "a" is TRUE, so every unmatched point snapped to its nearest
   # country -- a mid-Pacific point came back as Fiji, inverting the documented
@@ -690,13 +714,13 @@ test_that("locate_country validates tolerance_km", {
     expect_error(locate_country(lon = 0, lat = 0, tolerance_km = bad),
                  "tolerance_km", info = paste(deparse(bad), collapse = ""))
   }
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   expect_identical(locate_country(lon = -140, lat = -20, tolerance_km = 25)$iso3c,
                    NA_character_)
 })
 
 test_that("correlate_indicators validates min_n", {
+  skip_slow_on_cran()
   snap <- countryatlas::world_snapshot$countries
   for (bad in list(NA, "a", c(1, 2), -5)) {
     expect_error(correlate_indicators(snap, min_n = bad),
@@ -706,9 +730,9 @@ test_that("correlate_indicators validates min_n", {
 })
 
 test_that("dorling_map validates k and itermax", {
+  skip_slow_on_cran()
   # An sf frame, so the only thing left to reject is the scalar.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   skip_if_not_installed("cartogram")
   sfd <- attach_geometry(countryatlas::world_snapshot$countries, geometry = "sf")
   for (bad in list(NA, "a", c(1, 2), -1)) {
@@ -719,14 +743,14 @@ test_that("dorling_map validates k and itermax", {
 })
 
 test_that("a bad argument is reported before any optional-package gate", {
+  skip_slow_on_cran()
   # A mistyped column or an out-of-range scalar is the caller's bug; the message
   # must not depend on which optional packages happen to be installed. With
   # every optional package reported absent, each verb must still name the
   # argument. (spin_globe had this for its scalars but not for `fill`, and
   # interactive_map(engine = "ggsql") reported a missing ggsql for a non-sf
   # frame -- a package that has not shipped in the R bindings at all.)
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   snap <- countryatlas::world_snapshot$countries
   sfd <- attach_geometry(snap, geometry = "sf")
 
@@ -742,6 +766,7 @@ test_that("a bad argument is reported before any optional-package gate", {
 })
 
 test_that("the verbs say when they overwrite a column the caller already had", {
+  skip_slow_on_cran()
   # A user's own `rank`, `percentile` or `<value>_share` column was replaced in
   # silence. Warn rather than error: re-running a verb on its own output is
   # legitimate and idempotent, it just should not be invisible.
@@ -778,13 +803,13 @@ test_that("the verbs say when they overwrite a column the caller already had", {
 })
 
 test_that("every numeric bound is pinned at its own edge", {
+  skip_slow_on_cran()
   # A test that rejects -5 where the bound is 0 cannot tell lo = 0 from lo = -1:
   # loosening the bound by one goes undetected. Verified by mutation --
   # tolerance_km's bound survived a 0 -> -1 shift because its only rejection
   # test used -5. So assert the value *immediately* outside each bound, and the
   # boundary value itself, which iteration-24's lesson says must actually work.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   snap <- countryatlas::world_snapshot$countries
   sfd <- attach_geometry(snap, geometry = "sf")
   poly <- if (requireNamespace("maps", quietly = TRUE)) {
@@ -863,13 +888,13 @@ test_that("every numeric bound is pinned at its own edge", {
 })
 
 test_that("dorling_map rejects k = 0, which cartogram cannot use", {
+  skip_slow_on_cran()
   # check_number()'s bounds are inclusive, so lo = 0 admitted a zero that
   # cartogram then reported as "all sizes are missing and/or non-positive" --
   # a validator letting through a value the next layer cannot represent, which
   # is the same hole the integer.max ceilings were added to close. Anything
   # above zero is fine.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   skip_if_not_installed("cartogram")
   sfd <- attach_geometry(countryatlas::world_snapshot$countries, geometry = "sf")
   expect_error(dorling_map(sfd, population, k = 0), "greater than 0",
@@ -878,14 +903,14 @@ test_that("dorling_map rejects k = 0, which cartogram cannot use", {
 })
 
 test_that("a user column named like an internal temp column is harmless", {
+  skip_slow_on_cran()
   # The package builds a few dot-prefixed working columns -- `.wdj_pop`,
   # `.wdj_bin`, `.from_iso`, `.to_iso`, `.id` -- and a user frame is perfectly
   # entitled to carry a column of the same name. Nothing may break, and the
   # answer must not change. (An earlier pass reported per_capita() failing on a
   # user `.wdj_pop`; that turned out to be the probe's WDI mock, not a
   # collision -- the control failed identically without the column.)
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   snap <- countryatlas::world_snapshot$countries
   d <- snap[1:6, c("iso3c", "country", "continent", "gdp_per_capita",
                    "population")]
@@ -929,7 +954,10 @@ test_that("a user column named like an internal temp column is harmless", {
     pan <- data.frame(iso3c = rep(c("USA", "FRA"), each = 2),
                       year = c(2022, 2023, 2022, 2023), gdp = 1:4)
     pan$.wdj_pop <- -1
-    expect_identical(nrow(per_capita(pan, gdp, cache = FALSE)), 4L)
+    # The point here is the column collision, not the fetched population, which
+    # in this stubbed environment is unusable and now says so.
+    expect_identical(nrow(suppressWarnings(
+      per_capita(pan, gdp, cache = FALSE))), 4L)
   })
 
   # share_of_world computes its total in a local, so `.wdj_tot` cannot collide.
@@ -959,3 +987,920 @@ test_that("a user column named like an internal temp column is harmless", {
   }
 })
 
+
+test_that("unknown-name errors survive a numeric argument", {
+  skip_slow_on_cran()
+  # These messages put the pluralisation marker ahead of the value:
+  # "Unknown group{?s}: {.val {bad}}". With no quantity set, cli reaches for
+  # the most recent interpolation -- and a *numeric* vector there is read as
+  # the quantity itself, which must be length 1. A length-2 numeric therefore
+  # died on cli's own "length(object) == 1 is not TRUE" instead of reporting
+  # the bad input. Character vectors worked, which is why it stayed hidden.
+  #
+  # cli::qty(length(x)) states the count outright. Note qty(x) is NOT enough
+  # when x is numeric: it hits the same trap, because cli reads the numeric as
+  # the count. That is the form reporting.R already uses.
+  d <- data.frame(iso3c = c("FRA", "DEU"), year = 2020L, value = c(1, 2),
+                  stringsAsFactors = FALSE)
+  numeric_cases <- list(
+    "country_groups"  = function(v) country_groups(v),
+    "check_cols"      = function(v) countryatlas:::check_cols(d, v),
+    "world_table"     = function(v) world_table(countryatlas::world_snapshot$countries,
+                                                gdp_per_capita, columns = v)
+  )
+  for (nm in names(numeric_cases)) {
+    for (v in list(1, c(1, 2), c(1, 2, 3))) {
+      expect_error(numeric_cases[[nm]](v), class = "countryatlas_error",
+                   info = paste(nm, length(v)))
+    }
+  }
+  # Singular and plural both read correctly, for numeric and character alike.
+  expect_error(country_groups(1), "Unknown group:")
+  expect_error(country_groups(c(1, 2)), "Unknown groups:")
+  expect_error(country_groups("nope"), "Unknown group:")
+  expect_error(country_groups(c("a", "b")), "Unknown groups:")
+  expect_error(countryatlas:::check_cols(d, 1), "^Column ")
+  expect_error(countryatlas:::check_cols(d, c(1, 2)), "^Columns ")
+  expect_error(countryatlas:::check_cols(d, "zz"), "^Column ")
+  expect_error(countryatlas:::check_cols(d, c("zz", "yy")), "^Columns ")
+  # A valid group is still accepted.
+  expect_s3_class(country_groups("EU"), "data.frame")
+})
+
+test_that("the scalar validators can report a function or environment", {
+  skip_slow_on_cran()
+  # These build their message with {.val {x}}, which coerces to character --
+  # and that fails outright for a closure ("cannot coerce type 'closure' to
+  # vector of type 'character'"). So the validator's own error crashed rather
+  # than reporting the bad input, and every caller inherited it: passing a
+  # function to register_country_source(), clear_country_cache(),
+  # as_ggsql_source() or world_query() gave a bare simpleError from base R.
+  #
+  # length() is no help either -- length() of a closure is 1, so the
+  # length branch never caught it, and length(globalenv()) counts bindings, so
+  # an environment reported "Got 5 values".
+  validators <- c("check_string", "check_bool", "check_number", "check_top_n")
+  awkward <- list(fn = mean, env = globalenv(), lst = list(1, 2),
+                  frm = y ~ x, mat = matrix(1:4, 2))
+  for (v in validators) {
+    f <- get(v, envir = asNamespace("countryatlas"))
+    for (nm in names(awkward)) {
+      expect_error(f(awkward[[nm]], "myarg"), class = "countryatlas_error",
+                   info = paste(v, nm))
+    }
+  }
+  # The message names the class rather than trying to print the value.
+  expect_error(countryatlas:::check_string(mean, "myarg"), "<function>")
+  expect_error(countryatlas:::check_string(globalenv(), "myarg"), "<environment>")
+  expect_error(countryatlas:::check_number(mean, "myarg"), "<function>")
+  # Ordinary values are unaffected, including the counts and the value itself.
+  expect_error(countryatlas:::check_string(c("a", "b"), "myarg"), "Got 2 values")
+  expect_error(countryatlas:::check_string(1, "myarg"), "Got 1")
+  expect_error(countryatlas:::check_bool("yes", "myarg"), '"yes"')
+  expect_silent(countryatlas:::check_string("ok", "myarg"))
+  expect_silent(countryatlas:::check_bool(TRUE, "myarg"))
+  expect_silent(countryatlas:::check_number(5, "myarg"))
+
+  # And the public callers that surfaced it now fail cleanly.
+  expect_error(register_country_source(mean, function(...) NULL),
+               class = "countryatlas_error")
+  expect_error(clear_country_cache(source = mean), class = "countryatlas_error")
+  expect_error(world_query(gdp_per_capita, source = mean),
+               class = "countryatlas_error")
+})
+
+test_that("arguments used before validation still refuse a function cleanly", {
+  skip_slow_on_cran()
+  # Sibling of the scalar-validator fix above, but a different mechanism: here
+  # the value was *consumed* before any check ran, so the crash came from the
+  # consuming call rather than from the message.
+  #   check_choice()   - as.character(x) on the default-detection line
+  #   country_groups() - setdiff(group, valid) coerces
+  #   complete_years() - anyNA(years) errors on an environment, inside the
+  #                      condition of the guard meant to catch it
+  d <- data.frame(iso3c = rep(c("FRA", "DEU"), each = 2),
+                  year = rep(2000:2001, 2), value = 1:4,
+                  stringsAsFactors = FALSE)
+  awkward <- list(fn = mean, env = globalenv())
+  for (nm in names(awkward)) {
+    v <- awkward[[nm]]
+    expect_error(countryatlas:::check_choice(v, "k", c("a", "b")),
+                 class = "countryatlas_error", info = nm)
+    expect_error(country_groups(v), class = "countryatlas_error", info = nm)
+    expect_error(complete_years(d, years = v, value = "value"),
+                 class = "countryatlas_error", info = nm)
+  }
+  # A formula reaches setdiff()'s duplicated(), which also refuses it.
+  expect_error(country_groups(y ~ x), class = "countryatlas_error")
+  # Each names the class rather than trying to print the value.
+  expect_error(countryatlas:::check_choice(mean, "k", c("a", "b")), "<function>")
+  expect_error(country_groups(mean), "<function>")
+  expect_error(complete_years(d, years = mean, value = "value"), "<function>")
+
+  # Ordinary values keep their existing behaviour.
+  expect_equal(countryatlas:::check_choice("a", "k", c("a", "b")), "a")
+  expect_equal(countryatlas:::check_choice(c("a", "b"), "k", c("a", "b")), "a")
+  expect_error(countryatlas:::check_choice("zz", "k", c("a", "b")), 'Got "zz"')
+  expect_s3_class(country_groups("EU"), "data.frame")
+  expect_error(country_groups("nope"), "Unknown group:")
+  expect_s3_class(complete_years(d, years = 2000:2002, value = "value"),
+                  "data.frame")
+  expect_error(complete_years(d, years = "a", value = "value"),
+               class = "countryatlas_error")
+})
+
+test_that("a units value is refused by us, not by the units package", {
+  skip_slow_on_cran()
+  # sf's st_area() and st_distance() return units objects, so a threshold
+  # computed from geometry and handed to a numeric argument is a natural
+  # mistake. is.numeric() is TRUE for one, so it passed the type check, and
+  # the *range comparison* then raised the units package's own "both operands
+  # of the expression should be units objects" -- naming neither the argument
+  # nor this package.
+  skip_if_not_installed("units")
+  u <- units::set_units(5, "km")
+  for (f in list(function(v) countryatlas:::check_number(v, "cutoff_km"),
+                 function(v) countryatlas:::check_top_n(v))) {
+    expect_error(f(u), class = "countryatlas_error")
+    expect_error(f(u), "plain number")
+    expect_error(f(u), "<units>")
+  }
+  # The hint tells the caller what to do, and names their argument.
+  expect_error(countryatlas:::check_number(u, "cutoff_km"), "as.numeric\\(cutoff_km\\)")
+  # Converting is accepted.
+  expect_silent(countryatlas:::check_number(as.numeric(u), "cutoff_km"))
+
+  # Everything that already worked is untouched, including a classed numeric
+  # that *can* be compared, and a named scalar.
+  expect_silent(countryatlas:::check_number(5, "k"))
+  expect_silent(countryatlas:::check_number(structure(5, class = "myclass"), "k"))
+  expect_silent(countryatlas:::check_number(c(a = 5), "k"))
+  expect_silent(countryatlas:::check_top_n(5))
+  expect_silent(countryatlas:::check_top_n(Inf))
+  expect_error(countryatlas:::check_number(-1, "k", lo = 0), "between 0 and Inf")
+  expect_error(countryatlas:::check_top_n(0), "at least 1")
+})
+
+test_that("every custom_match entry must be named", {
+  skip_slow_on_cran()
+  x <- c("France", "Freedonia", "Germany")
+  # Works, and is the shape country_overrides() returns.
+  expect_equal(convert_country(x, to = "iso3c", custom_match = c(Freedonia = "FRA")),
+               c("FRA", "FRA", "DEU"))
+
+  # The bug: is.null(names()) passes a partly named vector, and the unnamed
+  # entry can never match, so it was silently dead.
+  for (bad in list(c(Freedonia = "FRA", "DEU"),
+                   stats::setNames("FRA", ""),
+                   stats::setNames("FRA", NA_character_))) {
+    expect_error(convert_country(x, to = "iso3c", custom_match = bad),
+                 "must be a named character vector", class = "countryatlas_error")
+  }
+  # The wholly unnamed and wrong-type cases still error as before.
+  expect_error(convert_country(x, to = "iso3c", custom_match = c("FRA")),
+               "no names", class = "countryatlas_error")
+  expect_error(convert_country(x, to = "iso3c", custom_match = c(Freedonia = 1)),
+               class = "countryatlas_error")
+  # Zero-length means "no overrides", not a malformed one. It warns about
+  # "Freedonia", which is the point of having no override for it.
+  expect_no_error(suppressWarnings(
+    convert_country(x, to = "iso3c", custom_match = character(0))))
+  expect_warning(convert_country(x, to = "iso3c", custom_match = character(0)),
+                 "could not be matched")
+
+  # Values are deliberately not checked against the ISO list: the package's own
+  # overrides map Kosovo to XKX, which is not in countrycode's iso3c column.
+  expect_false("XKX" %in% countrycode::codelist$iso3c)
+  expect_equal(unname(country_overrides()[["Kosovo"]]), "XKX")
+  expect_no_error(convert_country("Kosovo", to = "iso3c",
+                                  custom_match = country_overrides()))
+  expect_true(all(nzchar(names(country_overrides()))))
+})
+
+test_that("a custom weights matrix must be non-negative and finite", {
+  skip_slow_on_cran()
+  iso <- c("FRA", "DEU", "ITA", "ESP")
+  good <- matrix(0, 4, 4, dimnames = list(iso, iso))
+  good[1, 2] <- good[2, 1] <- good[2, 3] <- good[3, 2] <- 1
+  expect_s3_class(country_weights("custom", w = good), "countryatlas_weights")
+
+  # The bug: row standardisation divides by the row sum, so a negative weight
+  # silently moved the statistic, and an all-negative matrix cancelled to
+  # exactly the all-positive answer.
+  neg <- good; neg[1, 2] <- neg[2, 1] <- -1
+  expect_error(country_weights("custom", w = neg), "non-negative",
+               class = "countryatlas_error")
+  expect_error(country_weights("custom", w = -good), "non-negative",
+               class = "countryatlas_error")
+  # The bug: an infinite weight normalised to NaN and the verb then blamed
+  # connectivity instead of the weight.
+  inf <- good; inf[1, 2] <- Inf
+  expect_error(country_weights("custom", w = inf), "finite",
+               class = "countryatlas_error")
+
+  # The long-frame form takes the same two checks.
+  lf <- data.frame(iso3c = c("FRA", "DEU"), neighbor = c("DEU", "FRA"),
+                   weight = c(1, 1), stringsAsFactors = FALSE)
+  expect_s3_class(country_weights("custom", w = lf), "countryatlas_weights")
+  expect_error(country_weights("custom", w = transform(lf, weight = c(1, -1))),
+               "non-negative", class = "countryatlas_error")
+  expect_error(country_weights("custom", w = transform(lf, weight = c(1, Inf))),
+               "finite", class = "countryatlas_error")
+
+  # What was already accepted stays accepted: zeros, a plain adjacency, an
+  # asymmetric matrix and a non-zero diagonal are all legitimate.
+  # An all-zero matrix is accepted, and says so -- it links nobody.
+  zero <- matrix(0, 4, 4, dimnames = list(iso, iso))
+  expect_warning(country_weights("custom", w = zero), "link no countries")
+  expect_s3_class(suppressWarnings(country_weights("custom", w = zero)),
+                  "countryatlas_weights")
+  asym <- good; asym[1, 2] <- 5
+  expect_s3_class(country_weights("custom", w = asym), "countryatlas_weights")
+  dg <- good; diag(dg) <- 1
+  expect_s3_class(country_weights("custom", w = dg), "countryatlas_weights")
+
+  # Every built-in constructor satisfies the checks it now imposes on callers.
+  # knn and distance work off the bundled centroids; contiguity needs sf, so it
+  # is only exercised where sf is present -- without this the test fails under
+  # _R_CHECK_DEPENDS_ONLY_ with sf's "is required" rather than anything to do
+  # with weights.
+  types <- list(list("knn", k = 4), list("distance", cutoff_km = 3000))
+  if (requireNamespace("sf", quietly = TRUE)) {
+    types <- c(list(list("contiguity")), types)
+  }
+  for (ty in types) {
+    m <- as.matrix(suppressWarnings(do.call(country_weights, ty)))
+    expect_true(all(is.finite(m)))
+    expect_true(all(m >= 0))
+    expect_s3_class(suppressWarnings(country_weights("custom", w = m)),
+                    "countryatlas_weights")
+  }
+})
+
+test_that("as_ggsql_source() checks its data and its connection", {
+  skip_slow_on_cran()
+  # The data check fires before need_pkg(), so it holds with no DBI installed.
+  expect_error(as_ggsql_source(1:5), "must be a data frame",
+               class = "countryatlas_error")
+  expect_error(as_ggsql_source(NULL), "must be a data frame",
+               class = "countryatlas_error")
+  expect_error(as_ggsql_source("a"), class = "countryatlas_error")
+
+  skip_if_not_installed("DBI")
+  skip_if_not_installed("duckdb")
+  snap <- countryatlas::world_snapshot$countries[1:5, c("iso3c", "gdp_per_capita")]
+
+  # A connection the caller opened stays open; one the function opened is its
+  # own business.
+  # wdj_duckdb(), not duckdb::duckdb(): the wrapper passes shared_home = FALSE,
+  # which is what silences duckdb's ?duckdb_storage notice.
+  cn <- DBI::dbConnect(countryatlas:::wdj_duckdb())
+  # suppressWarnings as well as try(): the test closes `cn` itself below, so
+  # this second disconnect warns rather than errors, and try() only catches
+  # errors.
+  on.exit(suppressWarnings(try(DBI::dbDisconnect(cn, shutdown = TRUE),
+                               silent = TRUE)), add = TRUE)
+  out <- suppressWarnings(suppressMessages(as_ggsql_source(snap, con = cn)))
+  expect_s4_class(out, "duckdb_connection")
+  expect_true(DBI::dbIsValid(cn))
+
+  # The bug: a closed connection reached dbWriteTable() as a bare
+  # "Invalid connection".
+  DBI::dbDisconnect(cn, shutdown = TRUE)
+  expect_error(as_ggsql_source(snap, con = cn), "closed",
+               class = "countryatlas_error")
+  # And something that is not a connection at all.
+  expect_error(as_ggsql_source(snap, con = 42), "DBIConnection",
+               class = "countryatlas_error")
+
+  # What already worked keeps working.
+  expect_no_error(suppressWarnings(suppressMessages(as_ggsql_source(snap))))
+  expect_no_error(suppressWarnings(suppressMessages(as_ggsql_source(snap[0, ]))))
+})
+
+# quo_arg_name() tells the user a column may be passed unquoted "or as a
+# string", and check_cols() then validates the string. The plotting verbs
+# spliced the raw quosure into aes() anyway, so the string form mapped the
+# constant "value" and died inside ggplot2 at *build* time with "Discrete
+# value supplied to a continuous scale" -- naming neither the argument nor the
+# fix. world_map(d, "value") was affected: the package's most common call.
+test_that("map verbs accept a column named as a string, not only unquoted", {
+  skip_slow_on_cran()
+  skip_if_not_installed("maps")
+  skip_if_not_installed("ggplot2")
+  d <- data.frame(
+    iso3c = c("FRA", "DEU", "ITA", "ESP", "POL", "NLD", "BEL", "AUT"),
+    value = c(120, 340, 260, 180, 90, 410, 150, 220),
+    grp = rep(c("a", "b"), 4), stringsAsFactors = FALSE)
+  g <- attach_geometry(d, geometry = "polygon")
+
+  # Both forms must build, and must build the *same* plot.
+  same <- function(bare, str) {
+    a <- ggplot2::ggplot_build(bare)
+    b <- ggplot2::ggplot_build(str)
+    expect_equal(a$data, b$data)
+    expect_equal(a$plot$labels, b$plot$labels)
+  }
+  same(world_map(g, value), world_map(g, "value"))
+  same(world_map(g, value, style = "binned"), world_map(g, "value", style = "binned"))
+  same(world_map(g, value, style = "quantile"), world_map(g, "value", style = "quantile"))
+  same(world_map(g, grp, style = "categorical"),
+       world_map(g, "grp", style = "categorical"))
+  same(coverage_map(g, value), coverage_map(g, "value"))
+  same(tile_map(d, value), tile_map(d, "value"))
+  same(bubble_map(d, value), bubble_map(d, "value"))
+  same(bubble_map(d, value, color = grp), bubble_map(d, "value", color = "grp"))
+  same(spike_map(d, value), spike_map(d, "value"))
+})
+
+test_that("the string form keeps the legend title the unquoted form gives", {
+  skip_slow_on_cran()
+  skip_if_not_installed("maps")
+  skip_if_not_installed("ggplot2")
+  d <- data.frame(iso3c = c("FRA", "DEU", "ITA"), gdp = c(1, 2, 3),
+                  stringsAsFactors = FALSE)
+  g <- attach_geometry(d, geometry = "polygon")
+  # ggplot2 unwraps `.data[["gdp"]]` to `gdp`, so resolving the mapping from
+  # the validated name must not leave `.data[["gdp"]]` in the legend.
+  lab <- ggplot2::ggplot_build(world_map(g, "gdp"))$plot$labels$fill
+  expect_false(grepl(".data", lab, fixed = TRUE))
+  expect_identical(lab, ggplot2::ggplot_build(world_map(g, gdp))$plot$labels$fill)
+})
+
+# abort_bare_column() exists because a few arguments take a column name as a
+# *string* while the verbs around them take a bare column through tidy eval, so
+# writing the bare column that works everywhere else produced base R's "object
+# 'v' not found". It was applied to the six value/indicator/columns/codes/by
+# arguments in analysis.R, disputes.R, diagnostics.R, reporting.R and
+# reference.R, and not to the join-key and query arguments that have exactly
+# the same shape -- aggregate_regions(by = region) explained itself while
+# attach_geometry(by = iso3c) did not.
+test_that("string column arguments report a bare column instead of 'not found'", {
+  skip_slow_on_cran()
+  d <- data.frame(iso3c = c("FRA", "DEU"), value = 1:2, stringsAsFactors = FALSE)
+  expect_error(attach_geometry(d, by = iso3c), class = "countryatlas_bare_column")
+  expect_error(subnational_map(d, value, by = nuts_id),
+               class = "countryatlas_bare_column")
+  expect_error(
+    register_country_source("bare-col-probe", function(...) d, key_col = iso3c),
+    class = "countryatlas_bare_column")
+  expect_error(world_query("value", facet = year), class = "countryatlas_bare_column")
+  expect_error(world_query("value", size = pop), class = "countryatlas_bare_column")
+  expect_error(as_ggsql_source(d, geometry_col = geom),
+               class = "countryatlas_bare_column")
+  # The message must name the argument and show the quoted form to write.
+  err <- rlang::catch_cnd(attach_geometry(d, by = iso3c))
+  expect_match(conditionMessage(err), "by", fixed = TRUE)
+  expect_match(conditionMessage(err), 'by = "iso3c"', fixed = TRUE)
+})
+
+test_that("guarding the bare form leaves the string form and defaults working", {
+  skip_if_not_installed("maps")
+  d <- data.frame(iso3c = c("FRA", "DEU"), value = 1:2, stringsAsFactors = FALSE)
+  expect_no_error(attach_geometry(d, geometry = "polygon"))
+  expect_no_error(attach_geometry(d, by = "iso3c", geometry = "polygon"))
+  expect_no_error(world_query("value"))
+  # layer = "bubble" so `size` actually applies: on the default choropleth it
+  # now draws a notice that the layer does not use it, which is correct and
+  # beside the point here -- what is being checked is the string form.
+  expect_no_error(world_query("value", facet = "year", size = "pop",
+                              layer = "bubble"))
+  # A real error inside the argument must still surface as itself, not be
+  # reclassified as a bare column.
+  expect_error(attach_geometry(d, by = stop("boom")), "boom")
+})
+
+# read_year()'s warning had two defects at once, both user-facing.
+test_that("the unparseable-year warning names its source and lists real values", {
+  d <- data.frame(iso3c = c("FRA", "DEU"), year = c("junk", "N/A"),
+                  value = 1:2, stringsAsFactors = FALSE)
+  w <- rlang::catch_cnd(audit_time_coverage(d), classes = "countryatlas_bad_year")
+  msg <- conditionMessage(w)
+  # cli does not re-interpolate a substituted value, so `{source_label}` used
+  # to print the label's own markup verbatim.
+  expect_false(grepl("{.arg", msg, fixed = TRUE))
+  expect_false(grepl("{.val", msg, fixed = TRUE))
+  expect_match(msg, "data", fixed = TRUE)
+  expect_match(msg, "junk", fixed = TRUE)
+
+  # And the public extension point interpolates the source's name, whose
+  # braces referenced a variable living only in the caller's frame.
+  register_country_source("read-year-probe", function(indicator, countries, years, ...)
+    data.frame(iso3c = c("FRA", "DEU", "ITA", "ESP", "POL"),
+               year = rep("N/A", 5), value = 1:5, stringsAsFactors = FALSE))
+  w2 <- rlang::catch_cnd(fetch_indicator("read-year-probe", "x"),
+                         classes = "countryatlas_bad_year")
+  m2 <- conditionMessage(w2)
+  expect_match(m2, "read-year-probe", fixed = TRUE)
+  expect_false(grepl("{.val", m2, fixed = TRUE))
+  # Five bad rows but one distinct value: the list must not be padded with NAs.
+  # sum(bad) sized the slice, so this read `"N/A", NA, NA, and NA`.
+  expect_false(grepl("NA", sub('"N/A"', "", m2, fixed = TRUE), fixed = TRUE))
+})
+
+# Every verb that takes a column name reports a missing one as
+# `Column "x" not found in `data``. correlate_indicators() selects through
+# tidyselect, whose own error for a name that does not exist is a
+# vctrs_error_subscript_oob -- "Can't select columns that don't exist" --
+# so it was the last unclassed error left at this boundary.
+test_that("correlate_indicators reports a missing column like its siblings", {
+  skip_slow_on_cran()
+  d <- data.frame(iso3c = c("FRA", "DEU", "ITA", "ESP"), year = rep(2000, 4),
+                  value = c(1, 2, 3, 4), pop = c(6e7, 8e7, 5e7, 4e7),
+                  gdp = c(9, 8, 7, 6), txt = letters[1:4], stringsAsFactors = FALSE)
+  expect_error(correlate_indicators(d, "value", "nope"),
+               class = "countryatlas_error")
+  err <- rlang::catch_cnd(correlate_indicators(d, "value", "nope"))
+  expect_match(conditionMessage(err), "not found", fixed = TRUE)
+  expect_match(conditionMessage(err), "nope", fixed = TRUE)
+  # A column that exists but is not numeric keeps its own message.
+  expect_error(correlate_indicators(d, "value", "txt"), "not numeric")
+
+  # The selection is a tidyselect expression, so every form must still work.
+  expect_no_error(correlate_indicators(d, "value", "pop"))
+  expect_no_error(correlate_indicators(d, value, pop))
+  expect_no_error(correlate_indicators(d, dplyr::starts_with("p"), "value"))
+  expect_no_error(correlate_indicators(d, dplyr::where(is.numeric)))
+  expect_no_error(correlate_indicators(d, value:gdp))
+  expect_no_error(correlate_indicators(d))
+})
+
+test_that("locate_country reports a points object with no CRS", {
+  skip_slow_on_cran()
+  skip_if_not_installed("sf")
+  df <- data.frame(lon = c(2.35, 13.40), lat = c(48.85, 52.52))
+  # st_as_sf(coords = ) without `crs` leaves the CRS missing, and the object
+  # then reached st_transform() and came back with sf's "cannot transform sfc
+  # object with missing crs" -- naming neither the argument nor the fix. The
+  # non-sf case one line above had already been given a proper message.
+  nocrs <- sf::st_as_sf(df, coords = c("lon", "lat"))
+  expect_error(locate_country(points = nocrs), class = "countryatlas_error")
+  err <- rlang::catch_cnd(locate_country(points = nocrs))
+  expect_match(conditionMessage(err), "points", fixed = TRUE)
+  expect_match(conditionMessage(err), "coordinate reference system", fixed = TRUE)
+  # An sfc is accepted by the same branch, so it must be guarded too.
+  expect_error(locate_country(points = sf::st_geometry(nocrs)),
+               class = "countryatlas_error")
+
+  # The remedy the message prescribes has to work, and every path that already
+  # worked must keep working.
+  expect_no_error(locate_country(points = sf::st_set_crs(nocrs, 4326)))
+  with_crs <- sf::st_as_sf(df, coords = c("lon", "lat"), crs = 4326)
+  expect_equal(locate_country(points = with_crs)$iso3c, c("FRA", "DEU"))
+  expect_equal(locate_country(points = sf::st_transform(with_crs, 3857))$iso3c,
+               c("FRA", "DEU"))
+  expect_equal(locate_country(df$lon, df$lat)$iso3c, c("FRA", "DEU"))
+})
+
+test_that("convergence_club on a panel too short for the log-t test finds no clubs", {
+  skip_slow_on_cran()
+  # log_t_stat()'s regression window is start:ti with start = max(2, 0.3*ti),
+  # so a 2-period panel fits one point and the coefficient table has one row.
+  # Both defensive returns there were unexercised; the result must be "no
+  # clubs", not an error and not an invented club.
+  mk <- function(ny) {
+    iso <- c("FRA", "DEU", "ITA", "ESP", "POL")
+    data.frame(iso3c = rep(iso, each = ny), year = rep(seq_len(ny) + 1999, 5),
+               value = as.numeric(unlist(lapply(1:5, function(i) i * 10 + seq_len(ny)))),
+               stringsAsFactors = FALSE)
+  }
+  for (ny in c(2, 3, 4)) {
+    out <- suppressWarnings(convergence_club(mk(ny), "value"))
+    expect_true(all(is.na(out$club)), info = paste0(ny, " periods"))
+    expect_equal(nrow(out), 5L)
+  }
+  # And the test does run on a long enough panel.
+  long <- suppressWarnings(convergence_club(mk(20), "value"))
+  expect_true(any(!is.na(long$club)))
+})
+
+# adapter_reshape() turns a provider's response into the package's shape. Its
+# entity and value columns are both checked for existence; the year column was
+# not, and its absence corrupted the value column rather than being reported.
+test_that("adapter_reshape reports a missing year column instead of mangling the value", {
+  skip_slow_on_cran()
+  R <- countryatlas:::adapter_reshape
+  raw <- data.frame(entity = c("France", "Germany"), yr = c(2000L, 2000L),
+                    val = c(1.5, 2.5), stringsAsFactors = FALSE)
+  # The value auto-detection excludes the year BY NAME, so with year_col absent
+  # the setdiff removed nothing and num[1] picked the provider's real time
+  # column: the "indicator" came back as 2000, 2000 and `year` as all NA.
+  expect_error(R(raw, "v", "entity", "nope"), class = "countryatlas_error")
+  err <- rlang::catch_cnd(R(raw, "v", "entity", "nope"))
+  expect_match(conditionMessage(err), "year column", fixed = TRUE)
+
+  # The correct call is unaffected, and the value is the value.
+  out <- R(raw, "v", "entity", "yr")
+  expect_equal(out$v, c(1.5, 2.5))
+  expect_equal(out$year, c(2000L, 2000L))
+  expect_equal(out$iso3c, c("FRA", "DEU"))
+
+  # The sibling guards still behave.
+  expect_error(R(raw[0, ], "v", "entity", "yr"), class = "countryatlas_error")
+  expect_error(R(raw, "v", "nope", "yr"), class = "countryatlas_error")
+  expect_error(R(raw, "v", "entity", "yr", value_col = "values"),
+               class = "countryatlas_error")
+  expect_error(R(data.frame(entity = "Xanadu", yr = 2000L, val = 1,
+                            stringsAsFactors = FALSE), "v", "entity", "yr"),
+               class = "countryatlas_no_entities")
+  expect_warning(R(data.frame(entity = c("France", "France"), yr = c(2000L, 2000L),
+                              val = c(1, 2), stringsAsFactors = FALSE),
+                   "v", "entity", "yr"),
+                 class = "countryatlas_provider_duplicates")
+})
+
+# check_cols()'s message named `data` unconditionally, which is right for the
+# twenty-odd verbs whose frame argument is called that and wrong for the three
+# whose is not.
+test_that("a missing-column error names the argument the caller actually passed", {
+  skip_slow_on_cran()
+  expect_error(country_weights("custom", w = data.frame(a = 1, b = 2)),
+               "`w`", fixed = TRUE)
+  err <- rlang::catch_cnd(country_weights("custom", w = data.frame(a = 1, b = 2)))
+  expect_false(grepl("`data`", conditionMessage(err), fixed = TRUE))
+
+  # Duplicated column names come through the same helper.
+  dup <- stats::setNames(data.frame(a = 1, b = 2, c = 3),
+                         c("iso3c", "neighbor", "iso3c"))
+  err2 <- rlang::catch_cnd(country_weights("custom", w = dup))
+  expect_match(conditionMessage(err2), "`w`", fixed = TRUE)
+  expect_s3_class(err2, "countryatlas_duplicate_columns")
+
+  skip_if_not_installed("sf")
+  sq <- function(i) sf::st_polygon(list(cbind(c(i, i+1, i+1, i, i),
+                                              c(0, 0, 1, 1, 0))))
+  sfd <- sf::st_sf(iso3c = c("FRA", "DEU"), value = c(1, 2),
+                   geometry = sf::st_sfc(sq(0), sq(2)), crs = 4326)
+  err3 <- rlang::catch_cnd(cartogram_diagnostics(sfd, weight = "nope"))
+  expect_match(conditionMessage(err3), "`x`", fixed = TRUE)
+  expect_false(grepl("`data`", conditionMessage(err3), fixed = TRUE))
+
+  # And the verbs whose argument really is `data` keep saying so.
+  d <- data.frame(iso3c = c("FRA", "DEU"), year = c(2000, 2000),
+                  value = c(1, 2), stringsAsFactors = FALSE)
+  expect_match(conditionMessage(rlang::catch_cnd(growth_rate(d, "nope"))),
+               "`data`", fixed = TRUE)
+})
+
+test_that("a custom weights matrix rejects every unusable entry by name", {
+  skip_slow_on_cran()
+  nm <- list(c("FRA", "DEU"), c("FRA", "DEU"))
+  mk <- function(v) matrix(v, 2, 2, dimnames = nm)
+  expect_error(country_weights("custom", w = matrix(c(0, 1, 1, 0), 2, 2)),
+               class = "countryatlas_error")                       # no dimnames
+  expect_error(country_weights("custom",
+    w = matrix(0, 2, 2, dimnames = list(c("FRA","DEU"), c("DEU","FRA")))),
+    class = "countryatlas_error")                                  # names differ
+  expect_error(country_weights("custom", w = mk(c("0","1","1","0"))), "numeric")
+  expect_error(country_weights("custom", w = mk(c(0, NA, 1, 0))), "NA")
+  expect_error(country_weights("custom", w = mk(c(0, -1, -1, 0))), "non-negative")
+  expect_error(country_weights("custom", w = mk(c(0, Inf, Inf, 0))), "finite")
+  expect_no_error(country_weights("custom", w = mk(c(0, 1, 1, 0))))
+
+  lf <- data.frame(iso3c = c("FRA","DEU"), neighbor = c("DEU","FRA"),
+                   stringsAsFactors = FALSE)
+  expect_error(country_weights("custom", w = cbind(lf, weight = c("a","b"))),
+               "numeric")
+  expect_error(country_weights("custom", w = cbind(lf, weight = c(1, NA))), "NA")
+  expect_error(country_weights("custom",
+    w = data.frame(iso3c = c("FRA", NA), neighbor = c("DEU","FRA"),
+                   stringsAsFactors = FALSE)), "NA")
+  expect_no_error(country_weights("custom", w = lf))
+  # A subset with fewer than two members cannot form a graph.
+  m <- matrix(c(0,1,0, 1,0,1, 0,1,0), 3, 3,
+              dimnames = list(c("FRA","DEU","ITA"), c("FRA","DEU","ITA")))
+  expect_error(country_weights("custom", w = m, countries = "FRA"), "Fewer than 2")
+  expect_no_error(country_weights("custom", w = m, countries = c("FRA","DEU")))
+})
+
+# The package reports an argument that does not apply -- warn_projection_ignored(),
+# warn_recenter_ignored(), warn_scale_ignored(), warn_engine_ignored(). The first
+# two were applied to the verbs that *produce* polygon geometry and not to the
+# ones that draw it, and `n_bins` was inert without a word under the styles that
+# do not bin.
+test_that("world_map reports arguments that do not apply", {
+  skip_slow_on_cran()
+  skip_if_not_installed("ggplot2")
+  skip_if_not_installed("maps")
+  d <- data.frame(iso3c = c("FRA","DEU","ITA","ESP","POL","NLD","BEL","AUT"),
+                  value = c(10,20,40,80,15,55,33,66), grp = rep(c("a","b"), 4),
+                  stringsAsFactors = FALSE)
+  g <- attach_geometry(d, geometry = "polygon")
+
+  # The polygon backend draws in unprojected long/lat, so both of these looked
+  # honoured and changed nothing.
+  expect_warning(world_map(g, value, projection = "mercator"),
+                 class = "countryatlas_projection_ignored")
+  expect_warning(world_map(g, value, recenter = 180),
+                 class = "countryatlas_recenter_ignored")
+  # n_bins means nothing to a colourbar or to categories.
+  expect_warning(world_map(g, value, n_bins = 9),
+                 class = "countryatlas_n_bins_ignored")
+  expect_warning(world_map(g, grp, style = "categorical", n_bins = 9),
+                 class = "countryatlas_n_bins_ignored")
+
+  # None of it fires where the argument does apply, or at its default.
+  expect_silent(suppressMessages(world_map(g, value)))
+  expect_silent(suppressMessages(world_map(g, value, projection = "equal_earth")))
+  expect_silent(suppressMessages(world_map(g, value, style = "binned", n_bins = 9)))
+  expect_silent(suppressMessages(world_map(g, value, style = "quantile", n_bins = 3)))
+
+  skip_if_not_installed("sf")
+  skip_if_not_installed("rnaturalearth")
+  sf1 <- attach_geometry(d, geometry = "sf")
+  expect_silent(suppressMessages(world_map(sf1, value, projection = "mercator")))
+  expect_silent(suppressMessages(world_map(sf1, value, recenter = 180)))
+})
+
+test_that("value_by_alpha_map reports the same inert arguments", {
+  skip_slow_on_cran()
+  skip_if_not_installed("ggplot2")
+  skip_if_not_installed("maps")
+  d <- data.frame(iso3c = c("FRA","DEU","ITA","ESP"), value = c(10,20,40,80),
+                  unc = c(1,2,3,4), stringsAsFactors = FALSE)
+  g <- attach_geometry(d, geometry = "polygon")
+  # It carries its own `projection` and `n_bins` rather than passing them to
+  # world_map(), so it needed its own notices.
+  expect_warning(value_by_alpha_map(g, value, unc, projection = "mercator"),
+                 class = "countryatlas_projection_ignored")
+  expect_warning(value_by_alpha_map(g, value, unc, style = "continuous", n_bins = 9),
+                 class = "countryatlas_n_bins_ignored")
+  expect_silent(suppressMessages(value_by_alpha_map(g, value, unc)))
+  expect_silent(suppressMessages(
+    value_by_alpha_map(g, value, unc, style = "quantile", n_bins = 3)))
+
+  # n_bins really does bin here -- one class per bin plus the NA class -- which
+  # is what makes ignoring it under "continuous" the right thing to report.
+  nfill <- function(nb) length(unique(ggplot2::ggplot_build(suppressMessages(
+    value_by_alpha_map(g, value, unc, style = "quantile", n_bins = nb)))$data[[2]]$fill))
+  expect_true(nfill(3) < nfill(4))
+})
+
+# country_weights()'s `k`, `cutoff_km`, `w` and `scale` each belong to exactly
+# one scheme. The other three ignored them silently -- and
+# country_weights("knn", w = my_matrix) discarding the caller's own adjacency is
+# the worst of them, because nearest-neighbour weights come back looking
+# entirely reasonable.
+test_that("country_weights reports arguments its scheme does not use", {
+  skip_slow_on_cran()
+  iso <- c("FRA","DEU","ITA","ESP","POL","NLD","BEL","AUT")
+  m <- matrix(0, 8, 8, dimnames = list(iso, iso))
+  m[1, 2] <- m[2, 1] <- 1
+  cls <- "countryatlas_weights_args_ignored"
+
+  # Only schemes that need no geometry here: "contiguity" calls need_pkg("sf"),
+  # and expect_warning() evaluates the whole call, so under
+  # _R_CHECK_DEPENDS_ONLY_ the notice fires and the missing-sf error then
+  # propagates out of it. The contiguity cases live in their own test below.
+  expect_warning(country_weights("knn", iso, k = 2, w = m), class = cls)
+  expect_warning(country_weights("knn", iso, k = 2, cutoff_km = 500), class = cls)
+  expect_warning(country_weights("distance", iso, cutoff_km = 2000, k = 3), class = cls)
+  expect_warning(country_weights("custom", iso, w = m, scale = "medium"), class = cls)
+  expect_warning(country_weights("knn", iso, k = 2, scale = "medium"), class = cls)
+  expect_warning(country_weights("custom", iso, w = m, k = 3), class = cls)
+  expect_warning(country_weights("custom", iso, w = m, cutoff_km = 500), class = cls)
+
+  # The message names both what was ignored and what the scheme does use.
+  err <- rlang::catch_cnd(country_weights("knn", iso, k = 2, w = m), classes = cls)
+  expect_match(conditionMessage(err), "w", fixed = TRUE)
+  expect_match(conditionMessage(err), "k", fixed = TRUE)
+
+  # Each scheme's own argument, the shared `style`, and an explicitly passed
+  # default all stay quiet.
+  expect_silent(suppressMessages(country_weights("knn", iso, k = 2)))
+  expect_silent(suppressMessages(country_weights("distance", iso, cutoff_km = 2000)))
+  expect_silent(suppressMessages(country_weights("custom", iso, w = m)))
+  expect_silent(suppressMessages(country_weights("knn", iso, k = 2, style = "B")))
+})
+
+test_that("country_weights reports inert arguments for the contiguity scheme too", {
+  skip_slow_on_cran()
+  # Separated because contiguity is built from geometry: need_pkg("sf") errors
+  # without it, and that error would escape the expect_warning() below.
+  skip_if_not_installed("sf")
+  iso <- c("FRA","DEU","ITA","ESP","POL","NLD","BEL","AUT")
+  m <- matrix(0, 8, 8, dimnames = list(iso, iso))
+  m[1, 2] <- m[2, 1] <- 1
+  cls <- "countryatlas_weights_args_ignored"
+  expect_warning(country_weights("contiguity", iso, w = m), class = cls)
+  expect_warning(country_weights("contiguity", iso, k = 3), class = cls)
+  expect_warning(country_weights("contiguity", iso, cutoff_km = 500), class = cls)
+  # `scale` is the one this scheme uses, and an explicit default stays quiet.
+  expect_silent(suppressMessages(country_weights("contiguity", iso, scale = "medium")))
+  expect_silent(suppressMessages(country_weights("contiguity", iso, k = 5)))
+})
+
+test_that("an orthographic globe draws from every viewpoint", {
+  skip_slow_on_cran()
+  skip_if_not_installed("sf")
+  skip_if_not_installed("rnaturalearth")
+  skip_if_not_installed("ggplot2")
+  # coord_sf()'s graticule is clipped at the horizon on the one genuinely
+  # hemispheric projection, and a clipped line can reduce to a single point,
+  # which GEOS rejects: lon = 90, lat = 30 died on "IllegalArgumentException:
+  # point array must contain 0 or >1 elements" -- a foreign error naming
+  # neither the projection nor the viewpoint. winkel_tripel already had
+  # datum = NA for its own graticule trouble; orthographic did not.
+  g <- world_geometry("countries", geometry = "sf")
+  for (pt in list(c(90, 30), c(0, 20), c(45, 45), c(-90, 30), c(150, -30))) {
+    # expect_no_error() takes no `info`, so name the viewpoint in the label.
+    ok <- tryCatch({
+      ggplot2::ggplot_build(
+        ggplot2::ggplot(g) + ggplot2::geom_sf() +
+          countryatlas:::wdj_coord_sf("orthographic", recenter = pt[1], lat0 = pt[2]))
+      TRUE
+    }, error = function(e) conditionMessage(e))
+    expect_true(isTRUE(ok), label = paste0("orthographic at (", pt[1], ", ", pt[2], "): ",
+                                           if (isTRUE(ok)) "" else ok))
+  }
+  d <- data.frame(iso3c = c("FRA", "DEU", "ITA"), value = 1:3,
+                  stringsAsFactors = FALSE)
+  sf1 <- attach_geometry(d, geometry = "sf")
+  expect_no_error(ggplot2::ggplot_build(suppressMessages(
+    globe_map(sf1, value, lon = 90, lat = 30))))
+})
+
+test_that("globe_map reports n_bins under a style that does not bin", {
+  skip_slow_on_cran()
+  skip_if_not_installed("sf")
+  skip_if_not_installed("rnaturalearth")
+  d <- data.frame(iso3c = c("FRA","DEU","ITA","ESP"), value = c(1,2,3,4),
+                  grp = c("a","b","a","b"), stringsAsFactors = FALSE)
+  sf1 <- attach_geometry(d, geometry = "sf")
+  expect_warning(globe_map(sf1, value, n_bins = 9),
+                 class = "countryatlas_n_bins_ignored")
+  expect_warning(globe_map(sf1, grp, style = "categorical", n_bins = 9),
+                 class = "countryatlas_n_bins_ignored")
+  expect_silent(suppressMessages(globe_map(sf1, value)))
+  expect_silent(suppressMessages(globe_map(sf1, value, style = "quantile", n_bins = 3)))
+})
+
+# world_query()'s `size` belongs to layer = "bubble" and `n_bins` to
+# layer = "binned". The other layers took them without a word: n_bins was
+# dropped (only the binned layer emits a BIN clause) and size still went into
+# the VISUALISE list as `pop AS size` on a choropleth, which has no size
+# channel. The abort beside it already treats a layer/argument mismatch as
+# worth naming.
+test_that("world_query reports arguments its layer does not use", {
+  skip_slow_on_cran()
+  cls <- "countryatlas_layer_args_ignored"
+  expect_warning(world_query("value", size = "pop"), class = cls)
+  expect_warning(world_query("value", n_bins = 4), class = cls)
+  expect_warning(world_query("value", layer = "bubble", size = "pop", n_bins = 4),
+                 class = cls)
+  expect_warning(world_query("value", layer = "binned", n_bins = 4, size = "pop"),
+                 class = cls)
+  # Both at once are named together, not one warning each.
+  w <- rlang::catch_cnd(world_query("value", size = "pop", n_bins = 4), classes = cls)
+  expect_match(conditionMessage(w), "size", fixed = TRUE)
+  expect_match(conditionMessage(w), "n_bins", fixed = TRUE)
+
+  # Each layer's own argument, and the arguments common to all, stay quiet.
+  expect_silent(world_query("value"))
+  expect_silent(world_query("value", layer = "bubble", size = "pop"))
+  expect_silent(world_query("value", layer = "binned", n_bins = 4))
+  expect_silent(world_query("value", layer = "binned"))
+  expect_silent(world_query("value", facet = "year", transform = "log10"))
+
+  # "choropleth" is in neither branch of the lookup, so it must not error --
+  # `[[` on a named vector throws for a name that is absent.
+  expect_no_error(world_query("value", layer = "choropleth"))
+})
+
+# --- the four audits NEWS.md claimed complete --------------------------------
+# In every case the miss was a path that bypassed the shared helper the audit
+# reasoned about: compute_breaks() for n_bins, wdj_to_iso3c() for keys,
+# ascii_lower() for folding, wdj_return_frame() for the return class.
+
+test_that("n_bins is bounded on the tmap hand-off too", {
+  skip_slow_on_cran()
+  skip_if_not_installed("sf")
+  skip_if_not_installed("rnaturalearth")
+  skip_if_not_installed("tmap")
+  sf1 <- attach_geometry(data.frame(iso3c = "FRA", value = 1,
+                                    stringsAsFactors = FALSE), geometry = "sf")
+  # The branch returned before any check and handed n_bins to
+  # tm_scale_intervals(), which coerces with as.integer(): 1e18 became NA.
+  expect_error(suppressMessages(world_map(sf1, value, engine = "tmap", n_bins = 1e18)),
+               class = "countryatlas_error")
+  expect_error(suppressMessages(world_map(sf1, value, engine = "tmap", n_bins = "5")),
+               class = "countryatlas_error")
+})
+
+test_that("n_bins is bounded on the uncertainty path too", {
+  skip_if_not_installed("maps")
+  g <- attach_geometry(data.frame(iso3c = c("FRA", "DEU"), value = c(1, 2),
+                                  se = c(1, 2), stringsAsFactors = FALSE),
+                       geometry = "polygon")
+  # This path did as.integer(n_bins) and then seq_len() on it -- verbatim the
+  # seq_len(NA) failure the changelog documents for od_map(origins = ).
+  expect_error(suppressMessages(world_map(g, value, uncertainty = se, n_bins = 1e18)),
+               class = "countryatlas_error")
+  expect_error(suppressMessages(world_map(g, value, uncertainty = se, n_bins = "5")),
+               class = "countryatlas_error")
+})
+
+test_that("the code-vector entry points standardise their keys", {
+  skip_slow_on_cran()
+  # Both took the key verbatim, so a lowercase code matched nothing and the
+  # verb blamed its own data: check_dispute_coverage() reported zero tracked
+  # territories, and country_weights() blamed the centroid table.
+  lower <- check_dispute_coverage(c("esh", "xkx", "pse"))
+  upper <- check_dispute_coverage(c("ESH", "XKX", "PSE"))
+  expect_equal(sum(lower$in_data), sum(upper$in_data))
+  expect_gt(sum(lower$in_data), 0L)
+  expect_equal(sum(check_dispute_coverage(" esh ")$in_data), 1L)
+  # Nothing matching is now reported rather than read as a coverage finding.
+  expect_warning(check_dispute_coverage(c("ZZZ", "YYY")))
+
+  expect_no_error(w <- suppressMessages(
+    country_weights("knn", c("usa", "fra", "deu"), k = 2)))
+  expect_equal(nrow(as.matrix(w)), 3L)
+  # A key that resolves to nothing says so, and names the fix.
+  err <- rlang::catch_cnd(country_weights("knn", c("zz", "qq"), k = 1))
+  expect_match(conditionMessage(err), "standardize_country", fixed = TRUE)
+})
+
+test_that("identifier folding is ASCII everywhere, including scheme names", {
+  # tolower("ISO3C") returns a dotless i under tr_TR while the candidate list
+  # stays ASCII, so the "Did you mean" suggestion silently vanished.
+  #
+  # Reads R/ directly, which only exists in the source tree -- under R CMD check
+  # the package is installed and there is no R/*.R to read. The behavioural
+  # half of this test runs either way; only the grep needs the guard.
+  err <- rlang::catch_cnd(convert_country("France", to = "ISO3C"))
+  expect_match(conditionMessage(err), "iso3c", fixed = TRUE)
+  skip_if_no_source_tree()
+  src <- readLines(test_path("../../R/standardize.R"), warn = FALSE)
+  code <- sub("#.*$", "", src)          # strip comments before looking
+  expect_length(grep("[^_a-zA-Z.]tolower\\(", code), 0)
+})
+
+test_that("standardize_subnational normalises its return class", {
+  skip_slow_on_cran()
+  # A data.frame in gave a data.frame out and a grouped tibble stayed grouped,
+  # while standardize_country() next door normalises.
+  out <- suppressMessages(standardize_subnational(
+    data.frame(region = "DE-BY", stringsAsFactors = FALSE), region,
+    country = "Germany"))
+  expect_s3_class(out, "tbl_df")
+  grp <- suppressMessages(standardize_subnational(
+    dplyr::group_by(tibble::tibble(region = "DE-BY", k = 1), k), region,
+    country = "Germany"))
+  expect_false(inherits(grp, "grouped_df"))
+})
+
+test_that("compare_sources takes the numeric column, whatever else a source returns", {
+  skip_slow_on_cran()
+  # Reading `as.matrix(out[, sources])` followed by `abs()` suggests a
+  # character column could reach abs() and fail with base R's "non-numeric
+  # argument to mathematical function". It cannot: the per-source reshape picks
+  # the first numeric column and aborts when there is none. Pinned so that
+  # stays true if either half moves.
+  withr::defer(suppressWarnings(
+    remove_country_source(c("t_mixed", "t_numeric", "t_nonnum"))))
+  register_country_source("t_mixed", function(indicator, countries = NULL,
+                                              years = NULL, ...) {
+    tibble::tibble(iso3c = c("FRA", "DEU"), year = 2020L,
+                   gdp = c("1000", "2000"), other = c(1, 2))
+  })
+  register_country_source("t_numeric", function(indicator, countries = NULL,
+                                                years = NULL, ...) {
+    tibble::tibble(iso3c = c("FRA", "DEU"), year = 2020L, gdp = c(1000, 2000))
+  })
+  out <- compare_sources("gdp", sources = c("t_mixed", "t_numeric"),
+                         year = 2020)
+  expect_type(out$t_mixed, "double")
+  expect_type(out$t_numeric, "double")
+  expect_equal(nrow(out), 2L)
+
+  # And a source with no numeric column at all is named, not left to abs().
+  register_country_source("t_nonnum", function(indicator, countries = NULL,
+                                               years = NULL, ...) {
+    tibble::tibble(iso3c = c("FRA", "DEU"), year = 2020L,
+                   gdp = c("1000", "2000"))
+  })
+  expect_error(compare_sources("gdp", sources = c("t_nonnum", "t_numeric"),
+                               year = 2020),
+               "no numeric column")
+})
+
+test_that("od_map tells `origin` and `origins` apart", {
+  skip_slow_on_cran()
+  # One letter apart, adjacent in the signature, and unrelated in meaning.
+  # `origin = 3` used to fail inside check_string() talking about a coding
+  # scheme; `origins = "iso3c"` used to fail inside country-name matching.
+  skip_if_not_installed("maps")
+  od <- data.frame(from = rep(c("China", "Germany", "USA"), each = 2),
+                   to = c("USA", "Japan", "France", "Italy", "Mexico", "Canada"),
+                   value = c(500, 200, 80, 70, 300, 280),
+                   stringsAsFactors = FALSE)
+  expect_error(od_map(od, from, to, value, origin = 3), "Did you mean")
+  expect_error(od_map(od, from, to, value, origins = "iso3c"),
+               "not how to read them")
+  # Both used correctly still work.
+  expect_s3_class(suppressWarnings(suppressMessages(
+    od_map(od, from, to, value, origins = 2))), "ggplot")
+  expect_s3_class(suppressWarnings(suppressMessages(
+    od_map(od, from, to, value, origins = c("China", "USA")))), "ggplot")
+})

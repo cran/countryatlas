@@ -13,7 +13,7 @@ country_overrides(extra = NULL)
 \item{extra}{An optional named character vector of additional overrides
 (names are country/region names, values are \code{iso3c} codes). Merged on top
 of the built-in table, so you can extend or override it, e.g.
-\code{wdj_overrides(c(Somaliland = "SOM"))}.}
+\code{country_overrides(c(Somaliland = "SOM"))}.}
 }
 \value{
 A named character vector suitable for \code{countrycode(custom_match=)}.
@@ -24,8 +24,10 @@ A documented \code{custom_match} table for entities that map backends
 code. Earlier versions of the package \emph{deleted} these regions; now they are
 \emph{matched} instead, so they stop silently disappearing from maps.
 
-\code{country_overrides()} is the preferred name as of the package's rename to
-countryatlas; \code{wdj_overrides()} is kept as a backward-compatible alias.
+\code{country_overrides()} is the current name, as of the package's rename to
+countryatlas. \strong{\code{wdj_overrides()} is deprecated} and warns once per session;
+it returns the same table and will be removed. The help page kept describing
+it as "a backward-compatible alias" after the code had started warning.
 }
 \details{
 The table maps a country/region name (as spelled by the geometry backends) to
@@ -43,6 +45,14 @@ cedilla, \code{"Saint Barthelemy"} with an acute) are matched natively by
 listed here -- but in a non-UTF-8 locale (\code{LC_CTYPE=C}) they cannot be
 compared reliably and resolve to \code{NA}.
 
+Accented spellings also come in two Unicode forms that look identical: the
+accent can be one precomposed code point (NFC) or a base letter followed by
+a combining mark (NFD, which macOS returns for filenames). Only NFC matches
+\code{\link[countrycode:countrycode]{countrycode::countrycode()}}'s tables, so a name that resolves to nothing is
+retried with its combining marks stripped, which turns an NFD spelling into the
+ASCII spelling that resolves anywhere. Only unresolved names are retried, so
+this never changes a name that already matched.
+
 If your input may contain accented country names, run in a UTF-8 locale.
 De-accenting with \code{iconv(x, to = "ASCII//TRANSLIT")} gives ASCII spellings
 that resolve everywhere, but it is not an escape from the locale problem:
@@ -53,7 +63,7 @@ ASCII spellings directly.
 }
 
 \examples{
-wdj_overrides()
-wdj_overrides(c(Somaliland = "SOM"))
+# `country_overrides()` is the current name; `wdj_overrides()` warns.
 country_overrides()
+country_overrides(c(Somaliland = "SOM"))
 }

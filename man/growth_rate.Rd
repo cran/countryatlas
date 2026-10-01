@@ -12,12 +12,21 @@ growth_rate(data, value, type = c("yoy", "cagr"), suffix = "_growth")
 \item{value}{The value column (unquoted).}
 
 \item{type}{\code{"yoy"} (default, period-over-period) or \code{"cagr"} (compound
-annual growth rate vs. the first non-\code{NA} year).}
+annual growth rate vs. the first non-\code{NA} year).
+\code{"cagr"} needs a positive ratio at both ends, so a negative value gives
+\code{NA} for that row and a non-positive or infinite base year gives \code{NA}
+for that country, each with a warning; a value of exactly \code{0} is a
+legitimate annualised -100\%. \code{"yoy"} is a plain ratio change and is defined for
+negative values, but not after a zero or an infinity: neither has a
+ratio, so that row is \code{NA} (with a warning) rather than \code{Inf} or -100\%.}
 
 \item{suffix}{Suffix for the new column (default \code{"_growth"}).}
 }
 \value{
 \code{data} with a growth-rate column added (a proportion, so 0.03 = 3\%).
+Rows come back sorted by \code{iso3c} then \code{year}: the calculation reads each
+country's series in time order, so a row-aligned vector held alongside
+\code{data} will no longer line up.
 }
 \description{
 Adds a growth-rate column to a panel: either the period-over-period change

@@ -41,6 +41,7 @@ test_that("clear_wdi_cache forgets the memo and can remove the disk cache", {
 })
 
 test_that("animate_world animates or falls back to facets", {
+  skip_slow_on_cran()
   skip_if_not_installed("maps")
   mapdf <- attach_geometry(snap, geometry = "polygon")
   panel <- dplyr::bind_rows(dplyr::mutate(mapdf, year = 2023L),
@@ -63,6 +64,7 @@ test_that("animate_world animates or falls back to facets", {
 })
 
 test_that("cartogram_map builds every type and names a missing column", {
+  skip_slow_on_cran()
   skip_if_not_installed("sf")
   skip_if_not_installed("cartogram")
   skip_if_not_installed("rnaturalearth")
@@ -88,6 +90,7 @@ test_that("cartogram_map builds every type and names a missing column", {
 })
 
 test_that("index_to validates its column and its scalars", {
+  skip_slow_on_cran()
   df <- data.frame(iso3c = "USA", year = 2000:2002, gdp = c(50, 55, 60))
   # Used to fail with a dplyr error from inside mutate().
   expect_error(index_to(df, not_a_column, base_year = 2000), "not found in")
@@ -98,11 +101,15 @@ test_that("index_to validates its column and its scalars", {
                class = "countryatlas_error")
   out <- index_to(df, gdp, base_year = 2000)
   expect_equal(out$gdp_index, c(100, 110, 120))
-  # A base year with no observation gives NA rather than a wrong index.
-  expect_true(all(is.na(index_to(df, gdp, base_year = 1999)$gdp_index)))
+  # A base year with no observation gives NA rather than a wrong index -- and
+  # now names the country it could not index, so the all-NA column is readable.
+  expect_warning(none <- index_to(df, gdp, base_year = 1999),
+                 class = "countryatlas_no_base_year")
+  expect_true(all(is.na(none$gdp_index)))
 })
 
 test_that("spin_globe renders one frame per central longitude", {
+  skip_slow_on_cran()
   # gifski/magick assemble the GIF and are often unavailable, but the frame
   # loop is the part worth testing: it calls globe_map() once per longitude in
   # a full 0-360 sweep, which is why wdj_crs() must accept a `recenter` beyond
@@ -154,6 +161,7 @@ test_that("spin_globe validates its scalars before rendering anything", {
 })
 
 test_that("join_world auto-detects a code column, and reads it as codes", {
+  skip_slow_on_cran()
   # The fallback comment said "the first column that mostly matches ISO codes",
   # but it tested with origin = "country.name", which does not match most
   # alpha-3 codes ("FRA" and "JPN" fail; "USA" happens to). And a column named
@@ -198,21 +206,27 @@ test_that("a bounding-box region warns on the polygon backend", {
   expect_silent(world_geometry("countries", geometry = "polygon",
                                region = "Europe"))
   expect_silent(world_geometry("countries", geometry = "polygon"))
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   # The sf backend does a real clip, and says nothing.
   expect_silent(world_geometry("countries", geometry = "sf", region = med))
 })
 
 test_that("globe_map(backend = 'sf') builds on every style", {
+  skip_slow_on_cran()
   # This whole branch had no coverage: the only sf-related test in the file ran
   # *when sf was absent*, which is how nine bugs hid in an earlier pass.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   sfd <- attach_geometry(countryatlas::world_snapshot$countries, geometry = "sf")
   for (st in c("continuous", "binned", "quantile", "jenks")) {
     if (st == "jenks") skip_if_not_installed("classInt")
-    p <- globe_map(sfd, gdp_per_capita, backend = "sf", style = st, n_bins = 4)
+    # n_bins only for the styles that bin: passing it under "continuous" now
+    # draws a notice that the argument does not apply, which is correct and has
+    # nothing to do with what this test is checking.
+    p <- if (identical(st, "continuous")) {
+      globe_map(sfd, gdp_per_capita, backend = "sf", style = st)
+    } else {
+      globe_map(sfd, gdp_per_capita, backend = "sf", style = st, n_bins = 4)
+    }
     expect_s3_class(p, "ggplot")
     expect_no_error(ggplot2::ggplot_build(p))
   }
@@ -230,6 +244,7 @@ test_that("globe_map(backend = 'sf') builds on every style", {
 })
 
 test_that("print.countryatlas_coverage prints every section", {
+  skip_slow_on_cran()
   # The method had zero test coverage; each branch depends on a different part
   # of the report being non-empty.
   snap <- countryatlas::world_snapshot$countries
@@ -258,4 +273,55 @@ test_that("print.countryatlas_coverage prints every section", {
   invisible(capture.output(invisible(capture.output(ret <- print(cv))),
                            type = "message"))
   expect_identical(ret, cv)
+})
+
+test_that("remove_country_source undoes a registration", {
+  skip_slow_on_cran()
+  # Registering was permanent for the session, so anything that registered a
+  # source -- an example, a test, a scratch script -- left country_sources()
+  # reporting different rows for the rest of the session, with no way back.
+  before <- country_sources()$source
+  register_country_source("t_removable", function(indicator, ...) NULL)
+  expect_true("t_removable" %in% country_sources()$source)
+  expect_identical(remove_country_source("t_removable"), "t_removable")
+  expect_false("t_removable" %in% country_sources()$source)
+  expect_setequal(country_sources()$source, before)
+
+  # A name that was never registered is reported, not silently ignored.
+  expect_warning(remove_country_source("t_never_registered"),
+                 "No registered source")
+
+  # The built-ins are what ?fetch_indicator documents, so they stay.
+  for (b in c("wdi", "owid", "eurostat", "oecd", "comtrade")) {
+    expect_error(remove_country_source(b), "built-in")
+  }
+  expect_true(all(c("wdi", "owid", "eurostat", "oecd", "comtrade") %in%
+                    country_sources()$source))
+
+  # And a bad argument is named rather than reaching exists().
+  expect_error(remove_country_source(42), "must be one or more source names")
+  expect_error(remove_country_source(character(0)),
+               "must be one or more source names")
+
+  # Removing drops the memoised answers too: re-registering the same name must
+  # not serve results from the fetch function that was just removed.
+  calls <- 0L
+  register_country_source("t_memo", function(indicator, countries = NULL,
+                                             years = NULL, ...) {
+    calls <<- calls + 1L
+    tibble::tibble(iso3c = "FRA", year = 2020L, v = 1)
+  })
+  invisible(fetch_indicator("t_memo", c(v = "v"), years = 2020))
+  invisible(fetch_indicator("t_memo", c(v = "v"), years = 2020))
+  expect_equal(calls, 1L)                      # memoised
+  remove_country_source("t_memo")
+  register_country_source("t_memo", function(indicator, countries = NULL,
+                                             years = NULL, ...) {
+    calls <<- calls + 1L
+    tibble::tibble(iso3c = "FRA", year = 2020L, v = 2)
+  })
+  out <- fetch_indicator("t_memo", c(v = "v"), years = 2020)
+  expect_equal(calls, 2L)                      # the new function ran
+  expect_equal(out$v, 2)
+  remove_country_source("t_memo")
 })

@@ -28,6 +28,10 @@ knitr::opts_chunk$set(
 library(countryatlas)
 library(ggplot2)
 library(dplyr)
+# The polygon backend needs `maps`, which is only in Suggests, so every chunk
+# that attaches or draws polygon geometry is guarded on this. Without it the
+# vignette still builds -- it just skips those maps.
+has_maps <- requireNamespace("maps", quietly = TRUE)
 ```
 
 # Abstract {-}
@@ -37,18 +41,18 @@ same country is spelled `"US"`, `"U.S."`, `"United States"` and
 `"United States of America"`, and a naïve join treats them as different
 entities. **countryatlas** resolves this friction by adopting ISO 3166 codes as
 a universal join key and by stitching together three otherwise disjoint
-resources — map geometry, World Bank development indicators, and a comprehensive
-country-code crosswalk — into a single, map-ready table. This vignette presents
+resources (map geometry, World Bank development indicators, and a comprehensive
+country-code crosswalk) into a single, map-ready table. This vignette presents
 the package's design philosophy, its core functional vocabulary, and worked
 examples spanning data assembly, the join engine, diagnostics, reference data,
-analysis helpers and the grammar of honest cartographic displays — the
+analysis helpers and the grammar of honest cartographic displays; the
 companion vignettes take up the remaining map types, projections and query
 interface in detail. All examples run offline against a bundled data snapshot.
 
 # Introduction
 
 The package rests on a single conviction: *if a task does not make it easier to
-get country data onto a map — or to make that map honest — it does not belong
+get country data onto a map, or to make that map honest, it does not belong
 here*. Concretely, three packages are combined:
 
 * **`ggplot2::map_data("world")`** (or Natural Earth via `sf`) supplies polygon
@@ -60,7 +64,7 @@ here*. Concretely, three packages are combined:
 Three design commitments follow. First, **the happy path is one call**:
 `world_data(2020)` returns a tibble ready to map. Second, **the ISO code is the
 spine**: every function speaks `iso3c`/`iso2c` internally and exposes it, so
-anything the package produces joins to anything else — and to the user's own
+anything the package produces joins to anything else, and to the user's own
 data. Third, **no country is lost silently**: entities that map backends spell
 idiosyncratically are *matched* through a curated override table rather than
 dropped, and unmatched values are reported explicitly.
@@ -104,7 +108,7 @@ For analysis you usually want one tidy row per country, not ~99,000 polygon
 vertices. `country_data()` provides exactly that, and geometry is attached only
 at draw time:
 
-```{r}
+```{r eval = has_maps}
 mapdf <- attach_geometry(snapshot, geometry = "polygon")
 dim(mapdf)
 ```
@@ -117,12 +121,12 @@ dim(mapdf)
 styles. A continuous fill on a skewed indicator hides most of the variation, so
 binned and quantile styles are first-class:
 
-```{r}
+```{r eval = has_maps, fig.alt = "World choropleth of GDP per capita in quantile bins."}
 world_map(mapdf, gdp_per_capita, style = "quantile",
           title = "GDP per capita (quantile bins)")
 ```
 
-```{r}
+```{r eval = has_maps, fig.alt = "World map with every country coloured by its continent."}
 world_map(mapdf, continent, style = "categorical")
 ```
 
@@ -132,7 +136,7 @@ Totals (population, total emissions) are misrepresented by a choropleth because
 large values hide in small countries. A bubble map at country centroids is the
 right idiom:
 
-```{r}
+```{r eval = has_maps, fig.alt = "Bubble map: population drawn as proportional circles at country centroids."}
 bubble_map(snapshot, population)
 ```
 
@@ -141,7 +145,7 @@ bubble_map(snapshot, population)
 Tiny states vanish on a geographic map. An equal-area tile grid gives every
 country the same visual weight:
 
-```{r fig.height = 5}
+```{r fig.height = 5, fig.alt = "Equal-area tile grid: one identically sized tile per country, shaded by life expectancy."}
 tile_map(snapshot, life_expectancy)
 ```
 
@@ -150,7 +154,7 @@ tile_map(snapshot, life_expectancy)
 Origin–destination data (trade, migration, flights) is drawn as great-circle
 arcs, with both endpoints resolved to centroids automatically:
 
-```{r}
+```{r eval = has_maps, fig.alt = "Flow map: great-circle arcs joining four origin-destination country pairs, width by volume."}
 flows <- data.frame(
   from   = c("China", "Germany", "Brazil", "India"),
   to     = c("United States", "France", "Japan", "United Kingdom"),
@@ -172,8 +176,8 @@ messy <- data.frame(
 standardize_country(messy, nation, warn = FALSE)
 ```
 
-`join_world()` goes one step further — auto-detecting the country column,
-standardising it and attaching geometry — while `country_join()` reconciles two
+`join_world()` goes one step further, auto-detecting the country column,
+standardising it and attaching geometry, while `country_join()` reconciles two
 independent tables that each key on country names:
 
 ```{r}
@@ -203,8 +207,8 @@ repair_country_names(c("Brzil", "Germny", "United States"), verbose = FALSE)
 audit_coverage(snapshot)$na_rates
 ```
 
-The entities the previous version dropped — Kosovo, Micronesia, the Virgin
-Islands and a dozen others — are now matched:
+The entities the previous version dropped (Kosovo, Micronesia, the Virgin
+Islands and a dozen others) are now matched:
 
 ```{r}
 dropped <- c("Kosovo", "Micronesia", "Virgin Islands", "Canary Islands",
@@ -213,9 +217,9 @@ standardize_country(data.frame(region = dropped), region, warn = FALSE)
 ```
 
 Dissolved entities get first-class treatment too. The `historical` column of
-`check_country_match()` flags them — including `"USSR"`, which countrycode
+`check_country_match()` flags them, including `"USSR"`, which countrycode
 silently resolves to Russia's `RUS` (so Soviet-era data becomes Russian data
-without a warning) — and `dissolve_country()` expands them to their successor
+without a warning), and `dissolve_country()` expands them to their successor
 states via the curated `historical_codes` crosswalk:
 
 ```{r}
@@ -257,8 +261,8 @@ above).
 # Analysis helpers
 
 Small, in-spirit transforms that keep an analysis from leaving the package
-mid-pipeline. `per_capita()` disarms the commonest footgun in this data — *is
-this map just a population map?* — by normalising a total before it is plotted.
+mid-pipeline. `per_capita()` disarms the commonest footgun in this data (*is
+this map just a population map?*) by normalising a total before it is plotted.
 Supply the denominator, or omit it and the relevant years of `SP.POP.TOTL` are
 fetched for you:
 
@@ -299,7 +303,7 @@ panel |>
 ```
 
 And `complete_years()` fills the panel gaps that would otherwise make an
-animation flicker or a join silently drop years — by grid completion,
+animation flicker or a join silently drop years, by grid completion,
 carry-forward or linear interpolation (`lag_by_country()` and
 `diff_by_country()` round out the panel toolkit):
 
@@ -312,8 +316,8 @@ complete_years(patchy, 2019:2021, method = "linear")
 
 Three questions this data is constantly asked: *how unequal is the world*,
 *what moves together*, and *are poor countries catching up?* `gini()` and
-`theil()` measure inequality across countries — weight by population and they
-describe inequality between people; `theil()` decomposes exactly into
+`theil()` measure inequality across countries (weight by population and they
+describe inequality between people); `theil()` decomposes exactly into
 between/within components:
 
 ```{r}
@@ -335,7 +339,7 @@ regression (returning the implied convergence speed and half-life) and
 `sigma_convergence()` tracks whether cross-country dispersion is actually
 narrowing. And on the spatial side, `morans_i()` measures whether neighbouring
 countries have similar values, using the package's own `country_borders()`
-adjacency — no `spdep` needed.
+adjacency, with no `spdep` needed.
 
 # Performance and offline use
 
@@ -346,8 +350,8 @@ cache can be cleared with `clear_wdi_cache()`.
 
 # Conclusion
 
-`countryatlas` keeps its original soul — ISO codes as the universal join key,
-one call to a map-ready table — and extends it into a complete toolkit: any
+`countryatlas` keeps its original soul (ISO codes as the universal join key,
+one call to a map-ready table) and extends it into a complete toolkit: any
 indicator and any year span, a modern `sf` backend, an exposed join engine for
 the user's own data, honest diagnostics, curated reference data, analysis
 helpers, and a full vocabulary of projected, area-honest maps.

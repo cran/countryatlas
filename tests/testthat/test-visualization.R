@@ -1,6 +1,7 @@
 snap <- countryatlas::world_snapshot$countries
 
 test_that("world_map builds a ggplot for several styles", {
+  skip_slow_on_cran()
   skip_if_not_installed("maps")
   mapdf <- attach_geometry(snap, geometry = "polygon")
   for (style in c("continuous", "binned", "quantile", "categorical")) {
@@ -12,13 +13,13 @@ test_that("world_map builds a ggplot for several styles", {
 })
 
 test_that("world_map renders in every documented projection", {
+  skip_slow_on_cran()
   # Regression: winkel_tripel built a CRS fine and st_transform()ed fine, but
   # coord_sf()'s graticule collapsed to a degenerate point under it and GEOS
   # threw "point array must contain 0 or >1 elements" -- so one of the eight
   # projections 2.0.0 advertises errored on every render. Only a full
   # ggplot_build() over every projection catches this class of bug.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   sfdata <- attach_geometry(snap, geometry = "sf")
   for (proj in countryatlas:::wdj_projections()) {
     expect_no_error(
@@ -28,6 +29,7 @@ test_that("world_map renders in every documented projection", {
 })
 
 test_that("na_label renames the discrete legend's NA key", {
+  skip_slow_on_cran()
   skip_if_not_installed("maps")
   mapdf <- attach_geometry(snap, geometry = "polygon")
   labels_of <- function(p) {
@@ -49,15 +51,17 @@ test_that("na_label renames the discrete legend's NA key", {
 })
 
 test_that("bubble_map, tile_map and flow_map build", {
+  skip_slow_on_cran()
   skip_if_not_installed("maps")
-  expect_s3_class(bubble_map(snap, population), "ggplot")
-  expect_s3_class(tile_map(snap, gdp_per_capita), "ggplot")
+  expect_s3_class(suppressWarnings(bubble_map(snap, population)), "ggplot")
+  expect_s3_class(suppressWarnings(tile_map(snap, gdp_per_capita)), "ggplot")
   od <- data.frame(from = c("China", "Germany"),
                    to = c("United States", "France"), value = c(5, 2))
   expect_s3_class(flow_map(od, from, to, value), "ggplot")
 })
 
 test_that("geom_country_labels does not inherit the group aesthetic", {
+  skip_slow_on_cran()
   skip_if_not_installed("maps")
   mapdf <- attach_geometry(snap, geometry = "polygon")
   p <- world_map(mapdf, gdp_per_capita) + geom_country_labels(repel = FALSE)
@@ -93,10 +97,16 @@ test_that("theme_world_map is a theme", {
 
 test_that("sf-only plots error cleanly without sf", {
   skip_if(requireNamespace("sf", quietly = TRUE))
-  expect_error(bivariate_map(snap, gdp_per_capita, life_expectancy))
+  # "cleanly" is the whole point of this test, so assert the package gate
+  # rather than any error at all. bivariate_map() checks biscale before sf, so
+  # the message names whichever is missing first -- pin the class, which holds
+  # either way.
+  expect_error(bivariate_map(snap, gdp_per_capita, life_expectancy),
+               class = "rlib_error_package_not_found")
 })
 
 test_that("bivariate_map builds a ggplot (needs sf + biscale)", {
+  skip_slow_on_cran()
   # Regression: the fill columns were injected into biscale::bi_class() with
   # `!!sym()`, but bi_class() reads them with as.character(substitute(...)),
   # so every call failed with "the condition has length > 1".
@@ -117,33 +127,101 @@ test_that("bivariate_map builds a ggplot (needs sf + biscale)", {
 })
 
 test_that("interactive_map(engine='ggiraph') accepts a custom tooltip", {
+  skip_slow_on_cran()
   skip_if_not_installed("ggiraph")
   skip_if_not_installed("maps")
   mapdf <- attach_geometry(snap, geometry = "polygon")
   expect_s3_class(interactive_map(mapdf, gdp_per_capita, engine = "ggiraph"), "girafe")
-  expect_s3_class(
-    interactive_map(mapdf, gdp_per_capita, tooltip = country, engine = "ggiraph"),
-    "girafe"
-  )
+  by_country <- interactive_map(mapdf, gdp_per_capita, tooltip = country,
+                                engine = "ggiraph")
+  expect_s3_class(by_country, "girafe")
+  # Asserting the class alone would pass if `tooltip` were dropped on the floor:
+  # the object is a girafe either way. Two different tooltip columns have to
+  # produce two different widgets.
+  by_iso <- interactive_map(mapdf, gdp_per_capita, tooltip = iso3c,
+                            engine = "ggiraph")
+  expect_false(identical(by_country$x$html, by_iso$x$html))
 })
 
 test_that("interactive_map(engine='leaflet') accepts a custom tooltip", {
+  skip_slow_on_cran()
   skip_if_not_installed("leaflet")
   skip_if_no_sf_geometry()
   expect_s3_class(interactive_map(snap, gdp_per_capita, engine = "leaflet"), "leaflet")
-  expect_s3_class(
-    interactive_map(snap, gdp_per_capita, tooltip = country, engine = "leaflet"),
-    "leaflet"
-  )
+  by_country <- interactive_map(snap, gdp_per_capita, tooltip = country,
+                                engine = "leaflet")
+  expect_s3_class(by_country, "leaflet")
+  # Same reasoning as the ggiraph case: the class is satisfied whether or not
+  # `tooltip` was honoured, so compare two different columns.
+  by_iso <- interactive_map(snap, gdp_per_capita, tooltip = iso3c,
+                            engine = "leaflet")
+  lbl <- function(m) vapply(m$x$calls, function(cl) paste(utils::capture.output(
+    str(cl$args)), collapse = ""), character(1))
+  expect_false(identical(lbl(by_country), lbl(by_iso)))
 })
 
 test_that("dorling_map errors cleanly without sf/cartogram", {
   skip_if(requireNamespace("sf", quietly = TRUE) &&
             requireNamespace("cartogram", quietly = TRUE))
-  expect_error(dorling_map(snap, gdp_per_capita))
+  # cartogram_map()'s need_pkg() runs ahead of its is_sf() check, so the gate
+  # is what fires here -- pinned, so a shape or argument error cannot pass for
+  # it.
+  expect_error(dorling_map(snap, gdp_per_capita), class = "rlib_error_package_not_found")
+})
+
+test_that("a Dorling cartogram is area-proportional and does not overlap", {
+  skip_slow_on_cran()
+  # Sixteen tests cover this family's validation, package gating, cell counts
+  # and denominators -- none of them the two properties that make the output a
+  # Dorling cartogram at all. Passing the wrong column, or skipping the
+  # equal-area projection, would leave every one of them passing.
+  skip_if_no_sf_geometry()
+  skip_if_not_installed("cartogram")
+  sfd <- suppressWarnings(
+    attach_geometry(countryatlas::world_snapshot$countries, geometry = "sf"))
+  d <- suppressWarnings(dorling_map(sfd, population))$data
+
+  # Areas are only honest in a projected CRS.
+  expect_false(sf::st_is_longlat(d))
+
+  # Circle area is proportional to the value -- so the ratio is one constant,
+  # not merely correlated.
+  a <- as.numeric(suppressWarnings(sf::st_area(d)))
+  v <- d$population
+  ok <- is.finite(a) & is.finite(v) & v > 0 & a > 0
+  expect_gt(sum(ok), 100L)
+  ratio <- a[ok] / v[ok]
+  expect_equal(max(ratio) / min(ratio), 1, tolerance = 1e-6)
+
+  # ...and the whole point of Dorling: the circles do not overlap.
+  old <- sf::sf_use_s2()
+  on.exit(suppressMessages(sf::sf_use_s2(old)), add = TRUE)
+  suppressMessages(sf::sf_use_s2(FALSE))
+  touching <- suppressWarnings(sf::st_intersects(d))
+  expect_equal((sum(lengths(touching)) - nrow(d)) / 2, 0)
+})
+
+test_that("a gridded cartogram keeps countries near where they really are", {
+  skip_slow_on_cran()
+  # The grid is only a map if a country's cell tracks its real position; a
+  # mis-assignment would draw a plausible-looking grid of the wrong countries.
+  skip_if_no_sf_geometry()
+  snap <- countryatlas::world_snapshot$countries
+  d <- suppressWarnings(gridded_cartogram(snap, population, cells = 900))$data
+  cm <- countryatlas::country_meta
+  lon <- cm$centroid_lon[match(d$iso3c, cm$iso3c)]
+  lat <- cm$centroid_lat[match(d$iso3c, cm$iso3c)]
+  ok <- is.finite(lon) & is.finite(lat) & is.finite(d$x) & is.finite(d$y)
+  expect_gt(sum(ok), 500L)
+  expect_gt(cor(d$x[ok], lon[ok]), 0.9)
+  expect_gt(cor(d$y[ok], lat[ok]), 0.9)
+  # One country per cell (a country may hold several cells -- that is the
+  # value-proportional part).
+  expect_false(any(duplicated(paste(d$x, d$y))))
 })
 
 test_that("dorling_map builds a ggplot (needs sf + cartogram)", {
+  skip_slow_on_cran()
   skip_if_not_installed("sf")
   skip_if_not_installed("cartogram")
   skip_if_not_installed("rnaturalearth")
@@ -181,6 +259,7 @@ test_that("world_map quantile breaks are country-weighted, not vertex-weighted",
 # while computing aesthetics ... Caused by error in `.data$long`".
 
 test_that("world_map rejects a frame with no geometry, at the call", {
+  skip_slow_on_cran()
   snap <- countryatlas::world_snapshot$countries
   expect_error(world_map(snap, gdp_per_capita), "no map geometry")
   expect_error(world_map(snap, gdp_per_capita), class = "countryatlas_error")
@@ -194,6 +273,7 @@ test_that("world_map rejects a frame with no geometry, at the call", {
 })
 
 test_that("world_map still accepts every documented route to geometry", {
+  skip_slow_on_cran()
   skip_if_not_installed("maps")
   snap <- countryatlas::world_snapshot$countries
   poly <- attach_geometry(snap, geometry = "polygon")
@@ -215,23 +295,26 @@ test_that("world_map still accepts every documented route to geometry", {
 })
 
 test_that("the country-level plotting verbs keep working without geometry", {
+  skip_slow_on_cran()
   # Pin the asymmetry deliberately: these four attach geometry themselves, so
   # the guard above must not spread to them.
   skip_if_not_installed("maps")
   snap <- countryatlas::world_snapshot$countries
-  expect_s3_class(tile_map(snap, gdp_per_capita), "ggplot")
-  expect_s3_class(bubble_map(snap, population), "ggplot")
-  expect_s3_class(spike_map(snap, population), "ggplot")
+  expect_s3_class(suppressWarnings(tile_map(snap, gdp_per_capita)), "ggplot")
+  expect_s3_class(suppressWarnings(bubble_map(snap, population)), "ggplot")
+  expect_s3_class(suppressWarnings(spike_map(snap, population)), "ggplot")
   skip_if_not_installed("mapproj")
   expect_s3_class(globe_map(snap, gdp_per_capita, backend = "polygon"), "ggplot")
 })
 
 test_that("a returned plot survives ordinary ggplot2 operations", {
+  skip_slow_on_cran()
   skip_if_not_installed("maps")
   snap <- countryatlas::world_snapshot$countries
   poly <- attach_geometry(snap, geometry = "polygon")
-  plots <- list(world_map(poly, gdp_per_capita), tile_map(snap, gdp_per_capita),
-                bubble_map(snap, population), spike_map(snap, population))
+  plots <- suppressWarnings(
+    list(world_map(poly, gdp_per_capita), tile_map(snap, gdp_per_capita),
+         bubble_map(snap, population), spike_map(snap, population)))
   for (p in plots) {
     expect_s3_class(p, "ggplot")
     expect_no_error(ggplot2::ggplot_build(p + ggplot2::theme_minimal()))
@@ -259,6 +342,7 @@ test_that("a returned plot survives ordinary ggplot2 operations", {
 # already guarded, so this closes the pair.
 
 test_that("the numeric fill styles require a numeric column", {
+  skip_slow_on_cran()
   skip_if_not_installed("maps")
   snap <- countryatlas::world_snapshot$countries
   mapdf <- attach_geometry(snap, geometry = "polygon")
@@ -278,6 +362,7 @@ test_that("the numeric fill styles require a numeric column", {
 })
 
 test_that("the legitimate style/column pairings are untouched", {
+  skip_slow_on_cran()
   skip_if_not_installed("maps")
   snap <- countryatlas::world_snapshot$countries
   mapdf <- attach_geometry(snap, geometry = "polygon")
@@ -298,6 +383,7 @@ test_that("the legitimate style/column pairings are untouched", {
 })
 
 test_that("interactive_map reports a missing geometry the same way on every engine", {
+  skip_slow_on_cran()
   # The ggiraph branch assembles its own ggplot rather than calling world_map(),
   # so it bypassed the geometry check and failed at render time on `.data$long`,
   # while engine = "plotly" reported it properly. leaflet attaches geometry
@@ -312,18 +398,25 @@ test_that("interactive_map reports a missing geometry the same way on every engi
   }
   skip_if_not_installed("maps")
   mapdf <- attach_geometry(snap, geometry = "polygon")
-  for (eng in c("plotly", "ggiraph", "leaflet")) {
+  for (eng in c("plotly", "ggiraph")) {
     skip_if_not_installed(eng)
     expect_s3_class(interactive_map(mapdf, gdp_per_capita, engine = eng),
                     "htmlwidget")
   }
-  # leaflet's documented leniency: a country-level table is fine there.
+  # leaflet attaches sf geometry itself, to a polygon frame as to a country
+  # table, so it needs the sf backend too. Skipping on leaflet alone ran this
+  # wherever leaflet was installed and sf could not be loaded.
   skip_if_not_installed("leaflet")
+  skip_if_no_sf_geometry()
+  expect_s3_class(interactive_map(mapdf, gdp_per_capita, engine = "leaflet"),
+                  "htmlwidget")
+  # leaflet's documented leniency: a country-level table is fine there.
   expect_s3_class(interactive_map(snap, gdp_per_capita, engine = "leaflet"),
                   "htmlwidget")
 })
 
 test_that("animate_world validates before handing off to gganimate", {
+  skip_slow_on_cran()
   skip_if_not_installed("maps")
   # A three-country panel is enough, and keeps the geometry join small: joining
   # the whole snapshot for three years is ~250k rows and trips dplyr's
@@ -348,6 +441,7 @@ test_that("animate_world validates before handing off to gganimate", {
 })
 
 test_that("jenks degrades to quantile breaks when classInt is absent", {
+  skip_slow_on_cran()
   # A documented fallback that had no test of its own: it surfaced only as an
   # unexplained warning in the Suggests-free check tally.
   skip_if_not_installed("maps")
@@ -367,6 +461,7 @@ test_that("jenks degrades to quantile breaks when classInt is absent", {
 })
 
 test_that("flow_map says when it cannot place a flow", {
+  skip_slow_on_cran()
   # An unresolvable endpoint has no centroid, so its arc silently vanished --
   # and when nothing resolved, flow_map returned a bare world map with no arc
   # layer at all and no warning. The commonest cause is feeding iso3c codes
@@ -396,12 +491,12 @@ test_that("flow_map says when it cannot place a flow", {
 })
 
 test_that("geom_country_labels rejects an sf frame with an actionable message", {
+  skip_slow_on_cran()
   # The layer's own aes(x = long, y = lat) was evaluated against the sf frame,
   # which has neither column, so the failure was rlang's data-pronoun abort:
   # "Column `long` not found in `.data`". The 0-row guard inside label_data()
   # never got a chance to run.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   sfd <- attach_geometry(countryatlas::world_snapshot$countries, geometry = "sf")
   p <- world_map(sfd, gdp_per_capita) + geom_country_labels()
   expect_error(ggplot2::ggplot_build(p), "needs the polygon backend",
@@ -414,6 +509,7 @@ test_that("geom_country_labels rejects an sf frame with an actionable message", 
 })
 
 test_that("label placement survives the antimeridian without `group`", {
+  skip_slow_on_cran()
   # polygon_centroids() is exact because `group` identifies each country's
   # pieces and the label goes on the largest. Without it, a plain mean(range())
   # put every country that crosses 180 degrees on the far side of the planet:

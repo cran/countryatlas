@@ -12,7 +12,8 @@ attach_geometry(
   region = NULL,
   projection = "equal_earth",
   recenter = NULL,
-  overrides = country_overrides()
+  overrides = country_overrides(),
+  year = NULL
 )
 }
 \arguments{
@@ -22,22 +23,30 @@ attach_geometry(
 
 \item{geometry}{\code{"polygon"} (default) or \code{"sf"}.}
 
-\item{scale}{Natural Earth resolution for the \code{sf} backend. \code{"large"} needs the
+\item{scale}{Natural Earth resolution for the \code{sf} backend. The polygon
+backend serves one bundled resolution and warns if asked for another. \code{"large"} needs the
 non-CRAN \code{rnaturalearthhires} package; see \code{\link[=world_geometry]{world_geometry()}}. It also
 affects which countries are covered at all -- see below.}
 
 \item{region}{Optional region subset (see \code{\link[=world_geometry]{world_geometry()}}).}
 
 \item{projection, recenter}{Projection, and optional central meridian, for
-the \code{sf} backend (see \code{\link[=world_map]{world_map()}} for the projections available).}
+the \code{sf} backend (see \code{\link[=world_map]{world_map()}} for the projections available). The
+polygon backend can do neither and warns if asked.}
 
 \item{overrides}{Name -> iso3c overrides applied when matching the geometry
 backend's country names (default \code{\link[=country_overrides]{country_overrides()}}). Pass a custom set
 built with \code{\link[=country_overrides]{country_overrides()}} to add your own.}
+
+\item{year}{Attach historical geometry for this year instead of present-day
+borders, via \code{\link[=historical_geometry]{historical_geometry()}}. Entities that never had an ISO code
+cannot match on \code{iso3c}, so a low match rate warns.}
 }
 \value{
 For \code{"polygon"}, a tibble with \code{long}/\code{lat}/\code{group} plus your
-columns. For \code{"sf"}, an \code{sf} object.
+columns, one row per polygon vertex. For \code{"sf"}, an \code{sf} object, one row
+per feature. Both carry every country the backend has -- see \emph{How many
+rows come back}.
 }
 \description{
 The bridge between a one-row-per-country table (e.g. from \code{\link[=country_data]{country_data()}})
@@ -66,6 +75,24 @@ default, 110m) carries 169, and \code{"sf"} with \code{scale = "medium"} carries
 the 110m coastlines omit most small states, so \code{scale = "medium"} is the fix
 when microstates matter -- Hong Kong, Macao, Tuvalu and the British Virgin
 Islands are each in no other backend. Gibraltar alone is in none of them.
+}
+
+\section{How many rows come back}{
+
+The result is the backend's whole map, not just your rows: every country the
+backend carries is present, and the ones absent from \code{data} carry \code{NA} in
+your columns. That is what makes them draw in \code{na.value} rather than vanish,
+which is the point -- a choropleth that quietly omits the countries you have
+no data for reads as though they did not exist. It does mean the result is
+much larger than \code{data} and is not something to summarise directly:
+\code{attach_geometry()} on three countries returns 240 of them on the polygon
+backend and 176 on \code{"sf"}, whatever \code{data} held. The row count is larger
+still: \code{"polygon"} gives one row per polygon \emph{vertex} (about 99,000), and
+\code{"sf"} one row per \emph{feature} -- usually one per country, but a divided
+country appears more than once (Cyprus at \code{scale = "small"}; Cyprus and
+India at \code{"medium"}), so an \code{iso3c} join against it can fan out. Summarise
+\code{data} before attaching geometry, or use the verbs in this package, which
+de-duplicate to one row per country first.
 }
 
 \examples{

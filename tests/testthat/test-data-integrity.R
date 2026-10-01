@@ -17,9 +17,82 @@ test_that("country_meta is a clean one-row-per-country table", {
   expect_true(all(is.na(cm$capital_lat) | abs(cm$capital_lat) <= 90))
   expect_true(all(is.na(cm$area_km2) | cm$area_km2 > 0))
   expect_true(is.logical(cm$landlocked))
+  # Every range check above is of the form `is.na(x) | in_range(x)`, which is
+  # what lets a country with no capital through -- and which also passes
+  # vacuously if a column is entirely NA. A data-prep bug that blanked one would
+  # not fail any assertion above it, so pin the coverage too. Measured shares
+  # are 96% for the centroids and area and 84% for the capitals.
+  for (col in c("centroid_lon", "centroid_lat", "area_km2")) {
+    expect_gt(mean(!is.na(cm[[col]])), 0.9)
+  }
+  for (col in c("capital_lon", "capital_lat")) {
+    expect_gt(mean(!is.na(cm[[col]])), 0.75)
+  }
+})
+
+test_that("country_meta$area_km2 is anchored to real areas, not just positive", {
+  # Nothing pinned this column numerically: the assertions were `> 0` and
+  # ">90% non-NA", both of which a 179x-inflated value passes happily. And the
+  # formula that produced it lived in data-raw/build_datasets.R as a *copy* of
+  # the package's ring_area_km2() that had silently missed the antimeridian
+  # fix -- the two failure modes being a wrapped ring measuring 179x too large
+  # and a polar cap cancelling to ~0. Either would sail through the old checks.
+  #
+  # Tolerances are wide on purpose. These come from map_data("world") at its
+  # own coastline resolution and exclude or include disputed ground by its own
+  # conventions, so they are not expected to match a gazetteer exactly; 10% is
+  # far tighter than any plausible formula bug and far looser than the
+  # legitimate disagreement.
+  cm <- countryatlas::country_meta
+  area <- stats::setNames(cm$area_km2, cm$iso3c)
+  expected <- c(RUS = 17098246, CAN = 9984670, USA = 9833520, CHN = 9596960,
+                BRA = 8515767, AUS = 7692024, FRA = 551695, DEU = 357022,
+                JPN = 377975, EGY = 1001450)
+  for (iso in names(expected)) {
+    expect_lt(abs(area[[iso]] / expected[[iso]] - 1), 0.10,
+              label = paste("country_meta area for", iso))
+  }
+  # The whole land surface, as a check that nothing is inflated in aggregate.
+  # Earth's land area is ~1.489e8 km^2; the polygon backend covers most of it,
+  # and Antarctica is not an ISO country here.
+  expect_lt(sum(area, na.rm = TRUE), 1.6e8)
+  expect_gt(sum(area, na.rm = TRUE), 1.1e8)
+  # And no single country may exceed the largest real one by much -- the shape
+  # a wrap bug takes.
+  expect_lt(max(area, na.rm = TRUE), 2e7)
+})
+
+test_that("the data-raw area formula still matches the package's", {
+  # data-raw/build_datasets.R keeps a standalone copy of ring_area_km2() so it
+  # can run without the package installed. A copy that is allowed to drift is a
+  # fork, and this one had become one. The build script self-checks now; this
+  # asserts it from the other side, so a change to the package copy alone fails
+  # here rather than at the next data rebuild.
+  skip_if_no_source_tree()
+  src <- readLines("../../data-raw/build_datasets.R")
+  a <- grep("^ring_area_km2 <- function", src)
+  expect_length(a, 1L)
+  close <- grep("^[}]$", src)
+  b <- close[close > a][1]
+  env <- new.env()
+  eval(parse(text = paste(src[a:b], collapse = "
+")), envir = env)
+  build_copy <- env$ring_area_km2
+  lons <- seq(-180, 179, by = 1)
+  rings <- list(
+    list(c(0, 2, 2, 0), c(0, 0, 2, 2)),            # equatorial square
+    list(c(179, -179, -179, 179), c(0, 0, 2, 2)),  # the same, wrapped
+    list(lons, rep(-80, length(lons))),            # polar cap
+    list(c(0, 10, 10, 0), c(40, 40, 50, 50))       # mid-latitude box
+  )
+  for (r in rings) {
+    expect_equal(build_copy(r[[1]], r[[2]]),
+                 countryatlas:::ring_area_km2(r[[1]], r[[2]]))
+  }
 })
 
 test_that("country_meta centroids still agree with polygon_centroids()", {
+  skip_slow_on_cran()
   # The bundled centroids were built with the same largest-piece rule the live
   # geometry uses; drift between the two would silently change
   # distance_between() / bubble_map() placement.
@@ -62,6 +135,66 @@ test_that("world_tiles is a valid one-country-per-cell grid", {
   # Two countries sharing a cell would silently overplot in tile_map().
   expect_equal(anyDuplicated(wt[, c("row", "col")]), 0L)
   expect_true(all(wt$row >= 1L & wt$col >= 1L))
+  # The HIGH side was unchecked, and the search that places a blocked country
+  # scanned to col0 + radius: a country at col0 = 40 could be emitted at col
+  # 41, outside the 40x24 grid this dataset documents and tile_map() draws.
+  # Only the (0, 0) fallthrough and the collisions above were covered.
+  expect_true(all(wt$row <= 24L))
+  expect_true(all(wt$col <= 40L))
+  # No country may sit at the old fallthrough position either.
+  expect_equal(sum(wt$row == 0L | wt$col == 0L), 0L)
+})
+
+test_that("world_tiles places each country near its real position", {
+  # The layout is only useful if a country's cell is roughly where the country
+  # is. Nothing checked that: `break` inside the placement scan left only the
+  # inner loop, so a displaced country was re-placed at the *last* free cell in
+  # the search square rather than the first, and each cell claimed on the way
+  # stayed marked occupied for nobody -- 129 of 368 cells wasted, which pushed
+  # later countries further still. Mean displacement was 1.9 cells with a
+  # worst case of 7.1; it is now 0.9 and 2.8.
+  wt <- countryatlas::world_tiles
+  cm <- countryatlas::country_meta
+  both <- merge(as.data.frame(wt), as.data.frame(cm[, c("iso3c", "centroid_lon",
+                                                        "centroid_lat")]),
+                by = "iso3c")
+  expect_gt(nrow(both), 200L)
+  # The same binning build_tiles() uses, so this compares like with like.
+  col0 <- as.integer(cut(both$centroid_lon, breaks = 40, labels = FALSE))
+  row0 <- as.integer(cut(-both$centroid_lat, breaks = 24, labels = FALSE))
+  disp <- sqrt((both$row - row0)^2 + (both$col - col0)^2)
+  expect_lt(mean(disp), 1.2)
+  expect_lt(max(disp), 4)
+  # And most countries land exactly on their own cell.
+  expect_gt(mean(disp == 0), 0.35)
+})
+
+test_that("country_timeline's two directions agree wherever a code exists", {
+  skip_slow_on_cran()
+  # It reads historical_codes both ways ("what did the USSR become" and "what
+  # was Estonia part of"), so the two readings have to agree. They can only
+  # agree where the predecessor has a code: both columns hold iso3c, and ISO
+  # 3166-3 starts at 1974. Pin the split so a new entity either carries a code
+  # or updates ?country_timeline's note about it.
+  hc <- countryatlas::historical_codes
+  ents <- unique(hc[, c("historical", "iso3c_hist", "dissolved")])
+  codeless <- ents$historical[is.na(ents$iso3c_hist)]
+  expect_setequal(codeless,
+                  c("United Arab Republic", "Tanganyika", "Zanzibar"))
+  # ...and every codeless one predates ISO 3166-3.
+  expect_true(all(ents$dissolved[is.na(ents$iso3c_hist)] < 1974))
+  # The coded ones do round-trip: each successor names the entity back.
+  coded <- ents$historical[!is.na(ents$iso3c_hist)]
+  expect_gt(length(coded), 0L)
+  for (e in coded) {
+    hist_code <- unique(hc$iso3c_hist[hc$historical == e])
+    succ <- unique(hc$iso3c[hc$historical == e])
+    tl <- suppressWarnings(country_timeline(succ, origin = "iso3c"))
+    for (k in seq_along(succ)) {
+      expect_true(hist_code %in% tl$predecessors[[k]],
+                  label = paste(e, "->", succ[k], "-> back"))
+    }
+  }
 })
 
 test_that("historical_codes and historical_aliases() stay in step", {
@@ -103,17 +236,93 @@ test_that("world_snapshot matches its documented shape and plausible ranges", {
   expect_true(all(is.na(sc$life_expectancy) |
                     (sc$life_expectancy > 0 & sc$life_expectancy < 100)))
   expect_true(all(is.na(sc$co2_per_capita) | sc$co2_per_capita >= 0))
+  # Same vacuity guard as country_meta above: an all-NA column satisfies every
+  # `is.na(x) | ...` range test. Measured: population and life_expectancy are
+  # complete, co2 94%, gdp 89%.
+  for (col in c("population", "life_expectancy")) {
+    expect_equal(sum(is.na(sc[[col]])), 0L)
+  }
+  expect_gt(mean(!is.na(sc$co2_per_capita)), 0.85)
+  expect_gt(mean(!is.na(sc$gdp_per_capita)), 0.8)
   expect_true(is.factor(sc$income))
   expect_setequal(levels(sc$income), countryatlas:::income_levels())
 })
 
 test_that("the override table maps only to codes the package can resolve", {
-  ov <- wdj_overrides()
+  ov <- country_overrides()
   expect_equal(anyDuplicated(names(ov)), 0L)
   expect_true(all(nzchar(names(ov))))
   expect_length(setdiff(unname(ov), known_iso3c()), 0L)
   # Every target must survive the package's own iso3c round-trip.
   expect_false(anyNA(countryatlas:::wdj_to_iso3c(unname(ov), origin = "iso3c")))
+})
+
+test_that("data-raw/ still rebuilds the hand-curated datasets byte for byte", {
+  skip_slow_on_cran()
+  # country_groups_history and disputed_territories are curated by hand in
+  # data-raw/, so the script is the source of truth and drift can happen in
+  # either direction: editing the .rda without the script, or the script
+  # without rebuilding. The override snapshot below is already pinned for the
+  # same reason; these two were not, and both scripts are self-contained
+  # (tibble/dplyr/countrycode, no network), so re-running them is cheap.
+  # data-raw is .Rbuildignore'd, so this only runs from a source checkout.
+  rebuild <- function(script, objname) {
+    path <- testthat::test_path("..", "..", "data-raw", script)
+    skip_if_not(file.exists(path), "data-raw/ not present (installed package)")
+    # Drop the script's `usethis::use_data()` call before evaluating anything,
+    # so this can never write to data/. Stubbing it with a local `usethis`
+    # object does NOT work: `::` resolves through the namespace and ignores
+    # any variable of that name, so an earlier version of this test silently
+    # overwrote data/disputed_territories.rda with whatever the script built.
+    code <- parse(path)
+    writes <- vapply(code, function(e) {
+      is.call(e) && grepl("use_data", paste(deparse(e[[1]]), collapse = ""),
+                          fixed = TRUE)
+    }, logical(1))
+    expect_true(any(writes))   # if the script stops writing, this test is moot
+    # The scripts call library(tibble)/library(dplyr), which attach globally
+    # and would stay attached for every test file that runs after this one --
+    # masking stats::filter and stats::lag session-wide. Put the search path
+    # back the way it was found.
+    attached_before <- search()
+    on.exit({
+      for (pkg in setdiff(search(), attached_before)) {
+        try(detach(pkg, character.only = TRUE, unload = FALSE), silent = TRUE)
+      }
+    }, add = TRUE)
+    env <- new.env(parent = globalenv())
+    # From the package root, which is where every data-raw script documents
+    # being run from ("Run from the package root with the package dependencies
+    # available"). They read sibling files by relative path --
+    # source("data-raw/overrides_snapshot.R"), load("data/...rda") -- so
+    # evaluating them from tests/testthat/ fails on the path rather than on
+    # anything this test is about.
+    withr::local_dir(test_path("..", ".."))
+    # The scripts end with their own stopifnot() checks, so drift can surface
+    # as an evaluation error rather than a mismatch below. Catch it and say
+    # what happened -- otherwise the failure reads as a bare assertion from
+    # inside data-raw/ with no hint that a rebuild diverged.
+    err <- tryCatch({
+      for (e in code[!writes]) {
+        suppressMessages(suppressWarnings(eval(e, envir = env)))
+      }
+      NULL
+    }, error = function(e) conditionMessage(e))
+    if (!is.null(err)) {
+      fail(paste0("data-raw/", script, " no longer runs, so it cannot rebuild ",
+                  objname, ": ", err))
+      return(NULL)
+    }
+    get(objname, envir = env)
+  }
+
+  for (case in list(c("country_groups_history.R", "country_groups_history"),
+                    c("disputed_territories.R", "disputed_territories"))) {
+    rebuilt <- rebuild(case[1], case[2])
+    if (is.null(rebuilt)) next          # rebuild() already recorded the failure
+    shipped <- get(case[2])
+    expect_equal(as.data.frame(rebuilt), as.data.frame(shipped), info = case[1])
+  }
 })
 
 test_that("the data-raw override snapshot is still in sync with wdj_overrides()", {
@@ -127,7 +336,7 @@ test_that("the data-raw override snapshot is still in sync with wdj_overrides()"
   env <- new.env(parent = globalenv())
   sys.source(path, envir = env)
   snapshot <- get("wdj_overrides_snapshot", envir = env)()
-  live <- wdj_overrides()
+  live <- country_overrides()
   expect_setequal(names(snapshot), names(live))
   expect_equal(snapshot[order(names(snapshot))], live[order(names(live))])
 })
@@ -137,7 +346,7 @@ test_that("the override table is ASCII, so it matches in any locale", {
   # locale; the ASCII spellings in this table resolve everywhere, which is why
   # they are the ones curated here. Non-ASCII names would silently stop
   # matching under LC_CTYPE=C.
-  ov <- wdj_overrides()
+  ov <- country_overrides()
   expect_false(any(grepl("[^ -~]", names(ov))))
   expect_false(any(grepl("[^ -~]", unname(ov))))
   # The de-accented spellings the table exists to cover must all resolve.
@@ -147,11 +356,11 @@ test_that("the override table is ASCII, so it matches in any locale", {
 })
 
 test_that("map-ready frames are reduced to one row per country everywhere", {
+  skip_slow_on_cran()
   # Natural Earth gives divided countries two rows sharing one iso3c (Cyprus at
   # 110m), and an sf frame has no `group` column -- so code that gated
   # de-duplication on `group` silently double-counted them.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   snap <- countryatlas::world_snapshot$countries
   sfd <- attach_geometry(snap, geometry = "sf")
   expect_gt(nrow(sfd), dplyr::n_distinct(sfd$iso3c))    # duplicates exist
@@ -165,11 +374,18 @@ test_that("map-ready frames are reduced to one row per country everywhere", {
   expect_equal(unique(audit_coverage(sfd)$na_rates$n),
                dplyr::n_distinct(sfd$iso3c))
 
-  # bubble_map(backend = "sf") must draw one bubble per country, as the
-  # polygon path already guaranteed.
-  built <- ggplot2::ggplot_build(bubble_map(snap, population, backend = "sf"))
+  # bubble_map(backend = "sf") must draw one bubble per country it has a value
+  # for, as the polygon path already guaranteed -- never one per geometry
+  # piece, and never an invisible point for a country with no value (which
+  # ggplot2 drops at draw time with a bare "Removed n rows").
+  p_sf <- suppressWarnings(bubble_map(snap, population, backend = "sf"))
+  built <- ggplot2::ggplot_build(p_sf)
   pts <- built$data[[length(built$data)]]
-  expect_equal(nrow(pts), dplyr::n_distinct(sfd$iso3c))
+  expect_lte(nrow(pts), dplyr::n_distinct(sfd$iso3c))
+  expect_false(anyNA(pts$size))
+  # The count drawn is exactly the count claimed.
+  expect_equal(nrow(pts),
+               attr(p_sf, "countryatlas_provenance")$coverage$n_shown)
 })
 
 test_that("distance_between returns NA exactly where a centroid is missing", {
@@ -228,7 +444,7 @@ test_that("codes round-trip through every invertible scheme", {
 })
 
 test_that("the override table is internally consistent", {
-  ov <- wdj_overrides()
+  ov <- country_overrides()
   known <- countryatlas:::wdj_known_iso3c()
   expect_gt(length(ov), 0L)
   # Every target is a real code, so an override cannot introduce a phantom one.
@@ -242,20 +458,246 @@ test_that("the override table is internally consistent", {
 })
 
 test_that("every bundled table refers only to known codes", {
+  # Enumerated from the package, not listed by hand. The hand-written list was
+  # written for 2.0.0 and silently skipped country_groups_history and
+  # disputed_territories when 3.0.0 added them -- which is exactly how a new
+  # table ends up with no referential check at all. Discovering the tables
+  # means the next one is covered the day it lands.
   known <- countryatlas:::wdj_known_iso3c()
-  for (v in list(countryatlas::historical_codes$iso3c,
-                 countryatlas::country_groups_tbl$iso3c,
-                 countryatlas::world_tiles$iso3c,
-                 countryatlas::country_meta$iso3c,
-                 countryatlas::world_snapshot$countries$iso3c)) {
-    codes <- unique(stats::na.omit(v))
-    expect_length(setdiff(codes, known), 0L)
+  items <- utils::data(package = "countryatlas")$results[, "Item"]
+  # `world_snapshot` is a list of frames, so recurse one level.
+  seen <- character(0)
+  walk <- function(x, nm) {
+    if (is.data.frame(x)) {
+      if ("iso3c" %in% names(x)) {
+        seen <<- c(seen, nm)
+        expect_length(
+          setdiff(unique(stats::na.omit(x[["iso3c"]])), known), 0L)
+      }
+    } else if (is.list(x)) {
+      for (n in names(x)) walk(x[[n]], paste0(nm, "$", n))
+    }
   }
+  for (d in items) walk(get(d, envir = asNamespace("countryatlas")), d)
+  # Guard the guard: if discovery silently found nothing, the loop above would
+  # pass vacuously.
+  expect_gte(length(seen), 7L)
+  expect_true("country_groups_history" %in% seen)
+  expect_true("disputed_territories" %in% seen)
 })
 
 # Claims the vignettes make in prose. R CMD check runs their code but never
 # checks that the surrounding text is true, so these would drift silently and
 # the documentation would start lying to readers.
+
+test_that("README.Rmd's claims hold", {
+  skip_slow_on_cran()
+  # The README is the front page and makes two hard numeric claims, and unlike
+  # the vignettes nothing checked either. Its headline figure is computed from
+  # a live WDI fetch, so it cannot be pinned offline -- but the *argument* it
+  # rests on can be, against the bundled snapshot: joining by plain country
+  # name loses dozens of countries, and join_world() loses none.
+  skip_if_not_installed("maps")
+  snap <- countryatlas::world_snapshot$countries
+  regions <- unique(sub(":.*", "", maps::map("world", plot = FALSE,
+                                             fill = TRUE)$names))
+  lost_by_name <- sum(!snap$country %in% regions)
+  # "42 of 215 countries silently vanish" -- the live figure moves with WDI and
+  # with the maps package, so assert the shape of the claim, not the digit.
+  expect_gt(lost_by_name, 30)
+  expect_lt(lost_by_name, 60)
+  expect_equal(nrow(snap), 215)
+  # ... and that the package's own join is the fix: every snapshot country
+  # carries a code the ISO spine recognises.
+  expect_false(anyNA(snap$iso3c))
+  expect_length(setdiff(snap$iso3c, countryatlas:::wdj_known_iso3c()), 0L)
+
+  # "Equal-interval breaks put 92% of countries in one class here" -- this one
+  # is computed from bundled data, so it is exact.
+  mapdf <- suppressWarnings(attach_geometry(snap, geometry = "polygon"))
+  tb <- attr(suppressWarnings(classify_compare(mapdf, gdp_per_capita)),
+             "countryatlas_classification")
+  equal <- tb[tb$method == "equal", ]
+  expect_equal(round(100 * max(equal$share)), 92)
+  # ... and the contrast it draws with quantiles.
+  quant <- tb[tb$method == "quantile", ]
+  expect_lt(max(quant$share), 0.25)
+})
+
+test_that("the README lists every verb a reader could reach for", {
+  # A new export that never makes it into the front page's verb table is
+  # invisible to anyone who starts where readers start. Reads README.Rmd, so it
+  # needs the source tree.
+  skip_if_no_source_tree()
+  skip_if_not(file.exists("../../README.Rmd"), "README.Rmd not present")
+  rd_txt <- paste(readLines("../../README.Rmd", warn = FALSE), collapse = "\n")
+  listed <- gsub("[`()]", "",
+                 regmatches(rd_txt,
+                            gregexpr("`[a-zA-Z_][a-zA-Z0-9_.]*\\(\\)`",
+                                     rd_txt))[[1]])
+  ns <- asNamespace("countryatlas")
+  fns <- Filter(function(n) is.function(get(n, envir = ns)),
+                getNamespaceExports("countryatlas"))
+  # The two omissions are deliberate: wdj_overrides() is deprecated, and
+  # clear_wdi_cache() is the retained old name for clear_country_cache().
+  expect_setequal(setdiff(fns, listed), c("wdj_overrides", "clear_wdi_cache"))
+  # And the README names nothing the package does not export.
+  expect_length(intersect(listed, fns), length(fns) - 2L)
+})
+
+test_that("the README's bundled-data counts match the data", {
+  # A hand-maintained count in the front page drifts the moment the dataset
+  # grows: 3.0.0 added the two price-conversion series to common_indicators,
+  # taking it from 20 rows to 22, and the README still said 20. Assert it
+  # against the data so the next addition has to update the prose too.
+  skip_if_no_source_tree()
+  skip_if_not(file.exists("../../README.Rmd"), "README.Rmd not present")
+  rd_txt <- paste(readLines("../../README.Rmd", warn = FALSE), collapse = "\n")
+  claim <- regmatches(
+    rd_txt,
+    regexpr("`common_indicators` keeps the [0-9]+ you actually use", rd_txt))
+  expect_length(claim, 1L)
+  expect_equal(as.integer(gsub("[^0-9]", "", claim)),
+               nrow(common_indicators))
+})
+
+test_that("the dataset help pages' cross-dataset counts match the data", {
+  # ?country_meta and ?world_snapshot carry four hand-maintained numbers about
+  # how the two tables relate. That is the class of claim that already drifted
+  # here once -- the README said common_indicators kept 20 series after this
+  # release grew it to 22 -- and a data refresh is exactly what moves them.
+  # Read the numbers out of the Rd and assert them against the data, so the
+  # next refresh has to update the prose rather than quietly outdate it.
+  skip_if_no_source_tree()
+  rd_num <- function(file, pattern) {
+    skip_if_not(file.exists(file), paste(file, "not present"))
+    txt <- paste(readLines(file, warn = FALSE), collapse = " ")
+    m <- regmatches(txt, regexpr(pattern, txt))
+    expect_length(m, 1L)
+    # The first run of digits in the match, not every digit in it: the
+    # mismatch sentence carries two numbers ("38 of the 215 countries") and
+    # stripping all non-digits concatenated them into 38215.
+    as.integer(sub("^[^0-9]*([0-9]+).*$", "\\1", m))
+  }
+  # Paths are relative to tests/testthat/, as the README test above is.
+  cm <- "../../man/country_meta.Rd"
+  ws_rd <- "../../man/world_snapshot.Rd"
+
+  # "38 of the 215 countries in world_snapshot"
+  n_ws <- rd_num(cm, "of the [0-9]+ countries in")
+  expect_equal(n_ws, nrow(world_snapshot$countries))
+
+  n_diff <- rd_num(cm, "[0-9]+ of the [0-9]+ countries in")
+  j <- merge(world_snapshot$countries[, c("iso3c", "country")],
+             country_meta[, c("iso3c", "country")],
+             by = "iso3c", suffixes = c("_wb", "_cc"))
+  expect_equal(nrow(j), nrow(world_snapshot$countries))
+  expect_equal(sum(j$country_wb != j$country_cc, na.rm = TRUE), n_diff)
+
+  # ?world_snapshot states the same mismatch count independently, so the two
+  # help pages must agree with each other as well as with the data.
+  expect_equal(rd_num(ws_rd, "for [0-9]+ countries"), n_diff)
+
+  # "Ten further territories have a row but no centroid or area."
+  no_centroid <- sum(is.na(country_meta$centroid_lon) |
+                       is.na(country_meta$centroid_lat))
+  expect_equal(no_centroid, 10L)
+  expect_true(grepl("Ten further territories",
+                    paste(readLines(cm, warn = FALSE), collapse = " "),
+                    fixed = TRUE))
+
+  # "Kosovo (XKX) has no row -- countrycode has none either."
+  expect_false("XKX" %in% country_meta$iso3c)
+  expect_false("XKX" %in% countrycode::codelist$iso3c)
+  # But the paths the page says do handle it, still do.
+  expect_equal(suppressWarnings(convert_country("XKX", from = "iso3c",
+                                                to = "iso3c")), "XKX")
+})
+
+test_that("honest-maps.Rmd's claims hold", {
+  skip_slow_on_cran()
+  # Added for 3.0.0 and, unlike the three older vignettes, never checked. Its
+  # island list named the United Kingdom and Indonesia as dropped by contiguity
+  # weights when both keep land borders -- a vignette about maps quietly
+  # misleading, quietly misleading.
+  skip_if_not_installed("maps")
+  snap <- countryatlas::world_snapshot$countries
+
+  # "projection_info() says what each of the thirteen preserves"
+  expect_equal(nrow(projection_info()), 13L)
+
+  # "Equal-interval and pretty breaks put over 90% of countries into a single
+  # class"; "Quantiles put roughly 38 countries in each class"
+  mapdf <- suppressWarnings(attach_geometry(snap, geometry = "polygon"))
+  tb <- attr(suppressWarnings(classify_compare(mapdf, gdp_per_capita)),
+             "countryatlas_classification")
+  for (m in c("equal", "pretty")) {
+    expect_gt(max(tb$share[tb$method == m]), 0.9)
+  }
+  expect_true(all(abs(tb$n[tb$method == "quantile"] - 38) <= 2))
+
+  # "silently removes a quarter of the countries with data", and the specific
+  # countries named.
+  skip_if_no_sf_geometry()
+  r <- suppressWarnings(morans_i(snap, gdp_per_capita, n_perm = 0))
+  share_lost <- r$n_excluded / (r$n + r$n_excluded)
+  expect_gt(share_lost, 0.2)
+  expect_lt(share_lost, 0.3)
+  excluded <- r$excluded[[1]]
+  expect_true(all(c("JPN", "AUS", "MDG", "NZL", "PHL", "CUB", "LKA", "ISL")
+                  %in% excluded))
+  # ... and the two the vignette now explains are *not* dropped.
+  expect_false(any(c("GBR", "IDN") %in% excluded))
+})
+
+test_that("the vignettes' version and projection lists match the code", {
+  # Two lists that drift silently: the ggsql version countryatlas actually
+  # enforces, and the projection names sf-and-projections.Rmd enumerates. The
+  # vignette said `DRAW spatial` arrived at 0.4.0 while three places in R/ said
+  # 0.4.1, which read as a contradiction until the engine and the R package
+  # were named separately.
+  skip_if_no_source_tree()
+  gg <- paste(readLines("../../vignettes/countryatlas-and-ggsql.Rmd",
+                        warn = FALSE), collapse = " ")
+  src <- paste(readLines("../../R/visualization.R", warn = FALSE),
+               collapse = " ")
+  # The version interactive_map() actually enforces, and the version the
+  # vignette quotes, have to be the same string.
+  guard <- "0.4.1"
+  expect_true(grepl(paste0('"', guard, '"'), src, fixed = TRUE))
+  expect_true(grepl(guard, gg, fixed = TRUE))
+
+  # sf-and-projections.Rmd enumerates every projection by name. [a-z0-9_], not
+  # [a-z_]: "eckert4" has a digit in it.
+  sfp <- paste(readLines("../../vignettes/sf-and-projections.Rmd",
+                         warn = FALSE), collapse = " ")
+  named <- unique(gsub('[`"]', "",
+                       regmatches(sfp, gregexpr('`"[a-z0-9_]+"`', sfp))[[1]]))
+  expect_length(setdiff(projection_info()$projection, named), 0L)
+})
+
+test_that("getting-started.Rmd's claims hold", {
+  # It said "income is an ordered factor", which it is not -- a plain factor
+  # whose levels happen to be in income order, built that way deliberately in
+  # data-raw/. The visual claim held either way, so nothing caught it.
+  inc <- countryatlas::world_snapshot$countries$income
+  expect_s3_class(inc, "factor")
+  expect_false(is.ordered(inc))
+  expect_equal(levels(inc)[1], "Not classified")
+  expect_equal(levels(inc)[nlevels(inc)], "High income")
+
+  # "search the full World Bank catalogue by name -- offline"
+  expect_gt(nrow(wdi_search("renewable energy")), 0L)
+  expect_named(wdi_search("renewable energy"), c("indicator", "name"))
+
+  # ?world_snapshot's format section: three elements, sf NULL, and the columns
+  # it names by hand.
+  w <- countryatlas::world_snapshot
+  expect_named(w, c("countries", "sf", "year"))
+  expect_null(w$sf)
+  expect_true(all(c("iso3c", "iso2c", "country", "gdp_per_capita", "population",
+                    "life_expectancy", "co2_per_capita") %in% names(w$countries)))
+})
 
 test_that("joining-your-own-data.Rmd's claims hold", {
   # "snaps such points to the nearest country within tolerance_km (25 km by
@@ -279,8 +721,7 @@ test_that("joining-your-own-data.Rmd's claims hold", {
 })
 
 test_that("the point-lookup example in the vignettes resolves as printed", {
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   # locate_country(lon = c(2.35, -74.0, 139.7), lat = c(48.85, 40.7, 35.7))
   loc <- locate_country(lon = c(2.35, -74.0, 139.7),
                         lat = c(48.85, 40.7, 35.7))
@@ -288,6 +729,7 @@ test_that("the point-lookup example in the vignettes resolves as printed", {
 })
 
 test_that("the row-count and grid-size claims hold", {
+  skip_slow_on_cran()
   skip_if_not_installed("maps")
   # countryatlas.Rmd: "not ~99,000 polygon rows"
   n <- nrow(attach_geometry(countryatlas::world_snapshot$countries,
@@ -299,6 +741,27 @@ test_that("the row-count and grid-size claims hold", {
   expect_equal(nrow(countryatlas::world_tiles), 239L)
   expect_equal(nrow(countryatlas::country_meta) -
                  nrow(countryatlas::world_tiles), 10L)
+  # beyond-the-choropleth.Rmd names the five countries bubble_map()/spike_map()
+  # cannot place: "Hong Kong, Macao, Gibraltar, the British Virgin Islands and
+  # Tuvalu". Named in prose, so a centroid-table rebuild must not leave the
+  # vignette quietly wrong.
+  cent <- world_geometry("centroids", geometry = "polygon")
+  snap <- countryatlas::world_snapshot$countries
+  lost <- sort(snap$iso3c[!snap$iso3c %in% cent$iso3c &
+                            !is.na(snap$population)])
+  expect_equal(lost, c("GIB", "HKG", "MAC", "TUV", "VGB"))
+  # The vignette source is absent from an installed check directory, where
+  # these tests run from countryatlas.Rcheck/tests/.
+  skip_if_no_source_tree()
+  skip_if_not(file.exists("../../vignettes/beyond-the-choropleth.Rmd"),
+              "vignette source not present")
+  btc <- paste(readLines("../../vignettes/beyond-the-choropleth.Rmd",
+                         warn = FALSE), collapse = " ")
+  for (nm in c("Hong Kong", "Macao", "Gibraltar", "British Virgin Islands",
+               "Tuvalu")) {
+    expect_match(btc, nm, fixed = TRUE)
+  }
+  expect_match(btc, "five countries with population", fixed = TRUE)
 })
 
 test_that("the override table fully covers the polygon backend's names", {
@@ -314,12 +777,11 @@ test_that("the override table fully covers the polygon backend's names", {
 })
 
 test_that("a custom override changes what the sf backend joins", {
+  skip_slow_on_cran()
   # `overrides =` is a documented argument; the sf backend deliberately bypasses
   # its geometry cache for a non-default table, so a custom entry must actually
   # take effect -- and must not leak into a later default call.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
-  skip_if_not_installed("rnaturalearthdata")
+  skip_if_no_sf_geometry()
   geom <- world_geometry("countries", geometry = "sf")
   skip_if(!anyNA(geom$iso3c), "sf source has no unresolved feature to override")
   # Natural Earth carries Somaliland with no ISO code; map it onto Somalia.
@@ -337,6 +799,7 @@ test_that("a custom override changes what the sf backend joins", {
 })
 
 test_that("?attach_geometry's coverage figures match the backends", {
+  skip_slow_on_cran()
   # That section tells a reader which countries are missing from the map and
   # what to do about it, so every number in it is a promise. It said Gibraltar,
   # Hong Kong, Macao, Tuvalu and the British Virgin Islands were "in no backend
@@ -346,8 +809,7 @@ test_that("?attach_geometry's coverage figures match the backends", {
   #
   # If this test fails after an rnaturalearthdata update, the help page is what
   # needs changing, not the numbers here.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   skip_if_not_installed("maps")
   snap <- countryatlas::world_snapshot$countries
   expect_identical(nrow(snap), 215L)
@@ -420,6 +882,7 @@ test_that("the bundled tables are referentially consistent", {
 })
 
 test_that("no documented indicator code has been retired upstream", {
+  skip_slow_on_cran()
   # The World Bank retires series: EN.ATM.CO2E.KT and EN.ATM.CO2E.PC were
   # replaced by the AR5 greenhouse-gas series, and `?country_data`'s example went
   # on quoting the dead one, so anyone copying it got a warning and an all-NA
@@ -476,4 +939,59 @@ test_that("group memberships reflect the accessions the table is dated for", {
   expect_length(members("OECD"), 38L)             # Costa Rica joined 2021
   expect_length(members("G7"), 7L)
   expect_false("GBR" %in% members("EU"))
+})
+
+test_that("historical_codes distinguishes succession from continuation", {
+  hc <- countryatlas::historical_codes
+  expect_true("relation" %in% names(hc))
+  expect_setequal(unique(hc$relation), c("succession", "continuation"))
+  # A code listed among its own successors continued by construction.
+  self <- !is.na(hc$iso3c_hist) & hc$iso3c_hist == hc$iso3c
+  expect_true(all(hc$relation[self] == "continuation"))
+  # The cases the audit used to get wrong, pinned by name.
+  rel <- function(hist, iso) hc$relation[hc$historical == hist & hc$iso3c == iso]
+  expect_equal(rel("North Yemen", "YEM"), "continuation")
+  expect_equal(rel("Sudan (former)", "SDN"), "continuation")
+  expect_equal(rel("Sudan (former)", "SSD"), "succession")
+  expect_equal(rel("South Vietnam", "VNM"), "continuation")
+  expect_equal(rel("East Germany", "DEU"), "continuation")
+  expect_equal(rel("United Arab Republic", "EGY"), "continuation")
+  expect_equal(rel("Czechoslovakia", "CZE"), "succession")
+  expect_equal(rel("Soviet Union", "ARM"), "succession")
+})
+
+test_that("audit_time_coverage does not flag states that still exist", {
+  # `historical_codes` conflates succession with continuation, and reading every
+  # row as the first made this verb report Yemen, Sudan and Vietnam as dissolved
+  # and Germany and Egypt as not yet existing -- Sudan in both directions at
+  # once. On a world_data(1960:2020) panel that was about a hundred false rows,
+  # printed by default, from the verb whose job is catching that mistake.
+  live <- data.frame(
+    iso3c = c("YEM", "SDN", "VNM", "DEU", "EGY", "SDN"),
+    year = c(2020L, 2020L, 2020L, 1985L, 1960L, 2000L),
+    value = 1:6, stringsAsFactors = FALSE)
+  expect_equal(nrow(audit_time_coverage(live)), 0L)
+
+  # The genuine cases must still be caught, in both directions.
+  real <- data.frame(
+    iso3c = c("SSD", "CZE", "ARM", "CUW", "SUN", "YUG"),
+    year = c(2005L, 1990L, 1985L, 2005L, 1995L, 1995L),
+    value = 1:6, stringsAsFactors = FALSE)
+  out <- audit_time_coverage(real)
+  expect_equal(nrow(out), 6L)
+  expect_setequal(out$issue[out$iso3c %in% c("SSD", "CZE", "ARM", "CUW")],
+                  "before_existence")
+  expect_setequal(out$issue[out$iso3c %in% c("SUN", "YUG")], "after_dissolution")
+})
+
+test_that("the data-raw override snapshot still matches the package's table", {
+  # data-raw/overrides_snapshot.R carries a second copy of the override table
+  # with a "Keep in sync" comment and nothing enforcing it. They are identical
+  # today; this is what keeps them that way, since a divergence would mean the
+  # bundled datasets were built with different country resolution from the one
+  # the package uses at runtime.
+  skip_if_no_source_tree()
+  env <- new.env()
+  sys.source("../../data-raw/overrides_snapshot.R", envir = env)
+  expect_identical(env$wdj_overrides_snapshot(), countryatlas:::build_overrides())
 })

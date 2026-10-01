@@ -3,47 +3,326 @@
 # Convert raw country identifiers to iso3c, applying overrides and (optionally)
 # warning about misses. `origin` is any countrycode origin scheme
 # ("country.name", "iso2c", "iso3c", "wb", ...).
-wdj_to_iso3c <- function(x, origin = "country.name", custom_match = country_overrides()) {
-  check_string(origin, "origin")
+wdj_to_iso3c <- function(x, origin = "country.name", custom_match = country_overrides(),
+                         call = rlang::caller_env(), arg = "origin") {
+  check_string(origin, arg, call = call)
+  # `origin` was checked and the override table was not, though every value in
+  # it lands in the iso3c column -- and the iso3c branch below whitelists those
+  # values as valid by construction, so nothing downstream rejects them either.
+  # custom_match = c(Freedonia = 1) therefore put "1" in iso3c and every join
+  # after it keyed on that. The table is a name -> iso3c map; require the shape.
+  # is.null(names()) catches a wholly unnamed vector but not a partly named
+  # one: c(Freedonia = "FRA", "DEU") has names c("Freedonia", ""), and an entry
+  # whose name is "" or NA can never match a spelling, so it sat there doing
+  # nothing while the caller believed it was overriding something. That is the
+  # same silent-but-useless entry the comment above describes, so require the
+  # shape of every element, not just of the vector.
+  unnamed <- if (is.null(names(custom_match))) {
+    length(custom_match) > 0L
+  } else {
+    any(is.na(names(custom_match)) | !nzchar(names(custom_match)))
+  }
+  if (length(custom_match) && (!is.character(custom_match) || unnamed)) {
+    wdj_abort(c(
+      "{.arg custom_match} must be a named character vector.",
+      "x" = if (!is.character(custom_match)) {
+        "Got {.cls {class(custom_match)[1]}}."
+      } else if (is.null(names(custom_match))) {
+        "Got a character vector with no names."
+      } else {
+        "{sum(is.na(names(custom_match)) | !nzchar(names(custom_match)))} of
+         {length(custom_match)} entries have no name, so they can never match."
+      },
+      "i" = "Names are the spellings to override, values are {.field iso3c}
+             codes -- the shape {.fn country_overrides} returns."
+    ), call = call)
+  }
+  # as.character() on a data frame deparses each *column* into a string, so a
+  # frame handed to a verb that wants a country vector came back as the two
+  # "countries" `c("USA", "FRA")` and `c(1, 2)` -- silently, because those are
+  # just strings that match nothing and every row then reads as "not found".
+  # Nearly every other verb here takes `data` first, so this is the natural
+  # mistake: neighbors(my_df), convert_country(my_df), in_group(my_df, "EU"),
+  # dissolve_country(), country_timeline(), check_country_match(),
+  # repair_country_names() and distance_between() all accepted it. gini() and
+  # theil() already refused a data frame; this is the same refusal, one level
+  # down, where every one of them passes through.
+  check_country_vector(x, call = call)
   x <- as.character(x)
   if (identical(origin, "iso3c")) {
-    out <- ascii_upper(trimws(x))
-    # Still let overrides repair known-bad spellings.
+    # trimws()'s default class is [ \t\r\n], which is ASCII whitespace only,
+    # so a non-breaking space -- what a code copied out of a web table or a
+    # Word document carries -- survived the trim and then matched nothing:
+    # "FRA " resolved and "FRA<nbsp>" did not. [\h\v] is PCRE for every
+    # horizontal and vertical Unicode space, and trimws() already substitutes
+    # with perl = TRUE. A BOM or a zero-width space is a format character
+    # rather than whitespace and is deliberately still left alone.
+    xt <- trimws(x, whitespace = "[\\h\\v]")
+    out <- ascii_upper(xt)
+    # Still let overrides repair known-bad spellings -- keyed on the *trimmed*
+    # value. The whitelist below is built from `out`, which is trimmed, so
+    # matching raw `x` here meant padding was tolerated for a real code but
+    # not for an overridden spelling: with country_overrides(),
+    # "Somaliland" gave SOM and "Somaliland " gave NA, because the override
+    # missed and "SOMALILAND" then failed the whitelist. An ordinary trailing
+    # space out of a spreadsheet was enough.
     if (length(custom_match)) {
-      hit <- match(x, names(custom_match))
+      hit <- match(xt, names(custom_match))
       out[!is.na(hit)] <- unname(custom_match[hit[!is.na(hit)]])
     }
     valid <- c(wdj_known_iso3c(), unname(custom_match))
     out[!is.na(out) & !(out %in% valid)] <- NA_character_
     return(out)
   }
-  suppressWarnings(
-    countrycode::countrycode(
-      x,
-      origin = origin,
-      destination = "iso3c",
-      custom_match = if (length(custom_match)) custom_match else NULL,
-      warn = FALSE
+  cc <- function(vals) {
+    tryCatch(
+      suppressWarnings(
+        countrycode::countrycode(
+          vals,
+          origin = origin,
+          destination = "iso3c",
+          custom_match = if (length(custom_match)) custom_match else NULL,
+          warn = FALSE
+        )
+      ),
+      error = function(e) {
+        if (grepl("`origin`", conditionMessage(e), fixed = TRUE)) {
+          abort_bad_origin(origin, e, call, arg)
+        }
+        stop(e)
+      }
     )
-  )
+  }
+  out <- cc(x)
+  # Second pass for the spellings that resolved to nothing, on the
+  # combining-mark-stripped form. See strip_combining() for why.
+  miss <- is.na(out) & !is.na(x)
+  if (any(miss)) {
+    alt <- strip_combining(x[miss])
+    redo <- alt != x[miss]
+    if (any(redo)) {
+      patch <- out[miss]
+      patch[redo] <- cc(alt[redo])
+      out[miss] <- patch
+    }
+  }
+  out
+}
+
+# Drop Unicode combining marks: "Turkiye" written as `u` + a combining
+# diaeresis rather than as the precomposed u-with-diaeresis becomes plain
+# "Turkiye".
+#
+# Accented country names are a documented concern here (see the "Accented names
+# and locales" section of country_overrides()), but only for the *locale* half
+# of the problem -- the note says accented spellings match natively in a UTF-8
+# locale, and they do, in NFC. NFD is a different byte sequence from the NFC
+# form countrycode's tables carry, so it matched nothing even in a UTF-8
+# locale: Turkiye, Sao Tome and Aland (in their accented spellings) all came
+# back NA. macOS returns NFD for
+# filenames and several export paths emit it, so this is input a user gets
+# without ever choosing it, and the failure is silent -- just an unmatched
+# name.
+#
+# Base R has no Unicode normaliser and DESCRIPTION pins no stringi, so rather
+# than normalise to NFC this strips the marks, which turns an NFD spelling into
+# the ASCII spelling the package already documents as resolving in any locale.
+# Cote d'Ivoire matched before this and still does: countrycode's regex keys on
+# the ASCII substring, which decomposition leaves alone.
+strip_combining <- function(x) {
+  out <- x
+  # Only non-ASCII values can carry a mark, and combining marks are the one
+  # thing removed, so an accent-free name is untouched either way.
+  hi <- !is.na(x) & grepl("[^[:ascii:]]", x, perl = TRUE)
+  if (any(hi)) {
+    # U+0300-U+036F sits inside the BMP. A range over *astral* code points
+    # would not be portable -- Windows wchar_t is 16-bit and TRE rejects
+    # those (it broke a flag-emoji test here) -- but this one is fine.
+    out[hi] <- gsub("[\\x{0300}-\\x{036F}]", "", x[hi], perl = TRUE)
+  }
+  out
+}
+
+# Refuse a data frame where a country vector belongs. Called from the three
+# places that coerce a caller's identifiers -- wdj_to_iso3c(), and the two that
+# run as.character() before reaching it.
+check_country_vector <- function(x, call = rlang::caller_env()) {
+  if (is.data.frame(x)) {
+    wdj_abort(c(
+      "Country identifiers must be a vector, not a data frame.",
+      "x" = "Got a data frame with {ncol(x)} column{?s}.",
+      "i" = "Pass the identifiers themselves, e.g. {.code data$iso3c}."
+    ), call = call, class = "countryatlas_frame_as_vector")
+  }
+  # A data frame is only the common case: as.character() deparses *any* list
+  # element that is not a single value, so list(c("FRA", "DEU")) collapses to
+  # the one string `c("FRA", "DEU")` and convert_country() returned a single NA
+  # where two codes were asked for. A flat list of scalars -- list("FRA",
+  # "DEU") -- coerces correctly and is left alone, as is a matrix, which
+  # flattens.
+  if (is.list(x) && length(x) &&
+      !all(lengths(x) == 1L & vapply(x, is.atomic, logical(1)))) {
+    wdj_abort(c(
+      "Country identifiers must be a vector, not a list.",
+      "x" = "Some elements are not single values, so {.code as.character()}
+             renders them as text like
+             {.val {utils::head(as.character(x), 1L)}}.",
+      "i" = "Flatten it first with {.code unlist()}."
+    ), call = call, class = "countryatlas_frame_as_vector")
+  }
+  invisible(NULL)
+}
+
+# countrycode names the schemes it accepts in its own error. Read them back from
+# there rather than hardcoding a list that would drift from whatever version is
+# installed.
+countrycode_schemes <- function(msg) {
+  part <- sub("^.*one of these values:[[:space:]]*", "", msg)
+  if (identical(part, msg)) return(character(0))
+  vals <- sub("[.]$", "", trimws(strsplit(part, ",")[[1]]))
+  vals[nzchar(vals)]
+}
+
+# countrycode's destination error names no valid values -- it points at "the
+# column names in the conversion directory" -- so read them from codelist
+# instead of parsing the message, as abort_bad_origin() has to.
+abort_bad_destination <- function(shown, arg = "to",
+                                  call = rlang::caller_env()) {
+  valid <- tryCatch(names(countrycode::codelist),
+                    error = function(e) character(0))
+  extra <- tryCatch(names(convert_dest_map()), error = function(e) character(0))
+  ok <- unique(c(extra, valid))
+  near <- character(0)
+  if (length(ok)) {
+    # ascii_lower(), not tolower(): under tr_TR the latter returns a dotless
+    # i, so "ISO3C" folded to "iso3c" with a dotless i while the candidate
+    # list stayed ASCII -- and the "Did you mean" suggestion silently
+    # vanished. The exemption for the fuzzy matchers does not apply here: the
+    # candidate lists are already lowercase, so folding them is a no-op while
+    # folding the *input* mangles it.
+    lo <- ascii_lower(shown)
+    vl <- ascii_lower(ok)
+    hit <- grepl(lo, vl, fixed = TRUE) | startsWith(lo, vl)
+    near <- ok[hit]
+    if (!length(near)) {
+      d <- utils::adist(lo, vl)[1, ]
+      near <- ok[d <= 2L][order(d[d <= 2L])]
+    } else {
+      near <- near[order(nchar(near), near)]
+    }
+    near <- utils::head(near, 3L)
+  }
+  eg <- intersect(c("iso3c", "iso2c", "country", "continent", "region",
+                    "currency"), ok)
+  wdj_abort(c(
+    "{.arg {arg}} {.val {shown}} is not a country attribute.",
+    if (length(near)) c("i" = "Did you mean {.val {near}}?"),
+    if (length(eg)) {
+      c("i" = "Try one of {.val {eg}}, any
+               {.fn countrycode::countrycode} destination, or a
+               {.val name_fr}-style localised name.")
+    }
+  ), call = call, class = "countryatlas_bad_destination")
+}
+
+# `origin` is user-facing on seventeen exported functions -- neighbors(),
+# country_join(), standardize_country(), flow_map(), country_timeline(),
+# in_group(), convert_country(`from`) and friends -- and check_string() only
+# proves it is a string. An
+# invalid scheme therefore travelled all the way into countrycode() and died
+# there, so `origin = "country"` (the obvious spelling for a column of names)
+# raised "The `origin` argument must be a string of length 1 equal to one of
+# these values:" followed by forty items, attributed to a call the user never
+# made. Re-raise it as ours and name the scheme they probably meant.
+abort_bad_origin <- function(origin, cnd, call = rlang::caller_env(),
+                             arg = "origin") {
+  valid <- countrycode_schemes(conditionMessage(cnd))
+  near <- character(0)
+  if (length(valid)) {
+    lo <- ascii_lower(origin)
+    vl <- ascii_lower(valid)
+    # A half-remembered scheme is normally a fragment of the real name --
+    # "country" for "country.name", "iso3" for "iso3c" -- which edit distance
+    # ranks badly: "country" is five edits from "country.name", so the one
+    # suggestion that mattered was missing, while "name" was answered with
+    # "fao" and "imf" at distance three. Match on containment first, shortest
+    # candidate first, and only fall back to a tight distance.
+    hit <- grepl(lo, vl, fixed = TRUE) | startsWith(lo, vl)
+    near <- valid[hit]
+    if (!length(near)) {
+      d <- utils::adist(lo, vl)[1, ]
+      near <- valid[d <= 2L][order(d[d <= 2L])]
+    } else {
+      near <- near[order(nchar(near), near)]
+    }
+    near <- utils::head(near, 3L)
+  }
+  # Alphabetical order opens with "cctld", which nobody wants; lead with the
+  # schemes this package's own callers actually pass.
+  eg <- intersect(c("country.name", "iso3c", "iso2c", "wb", "un", "eurostat"),
+                  valid)
+  wdj_abort(c(
+    "{.arg {arg}} {.val {origin}} is not a country-coding scheme.",
+    if (length(near)) c("i" = "Did you mean {.val {near}}?"),
+    if (length(eg)) {
+      c("i" = "Any {.fn countrycode::countrycode} origin works, for example
+               {.val {eg}}.")
+    } else {
+      c("i" = "{conditionMessage(cnd)}")
+    }
+  ), call = call, class = "countryatlas_bad_origin")
+}
+
+# The shortcut names `add` accepts, mapped to countrycode destinations. Lifted
+# out of wdj_derive_from_iso3c() so check_add() validates against exactly the
+# set the derivation understands, rather than a second copy that can drift.
+WDJ_DEST_MAP <- c(
+  iso2c     = "iso2c",
+  continent = "continent",
+  region    = "region",
+  region23  = "region23",
+  un_region = "un.region.name",
+  country   = "country.name.en",
+  flag      = "unicode.symbol",
+  currency  = "iso4217c",
+  tld       = "cctld"
+)
+
+# `add` names attributes to derive from iso3c: a shortcut above, or any raw
+# countrycode destination. Unvalidated, its problems were reported under
+# somebody else's argument -- countrycode's `destination` for an unknown name,
+# convert_country()'s `to` in locate_country(), and base R's bare "missing
+# value where TRUE/FALSE needed" for an NA.
+check_add <- function(add, arg = "add", call = rlang::caller_env()) {
+  if (!length(add)) return(invisible(add))
+  if (!is.character(add) || anyNA(add)) {
+    wdj_abort(c(
+      "{.arg {arg}} must be a character vector of attribute names.",
+      "x" = if (anyNA(add)) "It contains {.val {NA}}."
+            else "Got {.cls {class(add)[1]}}."
+    ), call = call)
+  }
+  known <- unique(c("iso3c", names(WDJ_DEST_MAP),
+                    names(countrycode::codelist)))
+  bad <- setdiff(add, known)
+  if (length(bad)) {
+    wdj_abort(c(
+      "{.arg {arg}} names {length(bad)} attribute{?s} that cannot be derived:
+       {.val {bad}}.",
+      "i" = "Use one of {.val {names(WDJ_DEST_MAP)}}, or any column of
+             {.code countrycode::codelist}."
+    ), call = call)
+  }
+  invisible(add)
 }
 
 # Derive a set of attributes from iso3c. `add` may name any countrycode
 # destination; the common shortcuts (iso2c, continent, region) are handled
 # explicitly with fallbacks for codes countrycode does not know.
 wdj_derive_from_iso3c <- function(iso3c, add) {
+  check_add(add)
   out <- tibble::tibble(iso3c = iso3c)
-  dest_map <- c(
-    iso2c     = "iso2c",
-    continent = "continent",
-    region    = "region",
-    region23  = "region23",
-    un_region = "un.region.name",
-    country   = "country.name.en",
-    flag      = "unicode.symbol",
-    currency  = "iso4217c",
-    tld       = "cctld"
-  )
+  dest_map <- WDJ_DEST_MAP
   for (a in add) {
     if (a == "iso3c") next
     dest <- if (a %in% names(dest_map)) dest_map[[a]] else a # allow raw countrycode destinations
@@ -89,6 +368,10 @@ standardize_country <- function(data,
                                 custom_match = country_overrides(),
                                 warn = TRUE) {
   check_bool(warn, "warn")
+  # Whether the caller chose `add` or took the default decides, below, if
+  # clobbering their columns is worth a word. missing() has to be read before
+  # `add` is touched.
+  add_defaulted <- missing(add)
   if (!is.data.frame(data)) {
     wdj_abort("{.arg data} must be a data frame.")
   }
@@ -101,6 +384,9 @@ standardize_country <- function(data,
     wdj_abort("Column {.val {col_name %||% rlang::as_label(col_q)}} not found in {.arg data}.")
   }
 
+  # Before the c() below, which would coerce a numeric `add` to character and
+  # make it look like an unknown attribute name rather than a wrong type.
+  check_add(add)
   add <- unique(c("iso3c", add))
   raw <- data[[col_name]]
   iso3c <- wdj_to_iso3c(raw, origin = origin, custom_match = custom_match)
@@ -118,10 +404,33 @@ standardize_country <- function(data,
   }
 
   derived <- wdj_derive_from_iso3c(iso3c, add)
-  # Drop any columns we are about to (re)create, then bind. No warn_overwrite()
-  # here: `add` names the columns literally, so replacing an existing `continent`
-  # is precisely what the caller asked for. The warning belongs where the package
-  # invents the name (rank_countries) or composes it from a suffix (per_capita).
+  # Drop any columns we are about to (re)create, then bind. When the caller
+  # passed `add` themselves, replacing an existing `continent` is precisely what
+  # they asked for and no warning is due. But `add` *defaults* to four columns,
+  # so `standardize_country(d, country)` -- the call everyone makes, to get
+  # iso3c -- silently destroyed a user's own `continent`, `region` or `iso2c`.
+  # That is the same data loss warn_overwrite() exists for; the eleven other
+  # column-adding verbs all report it. iso3c is excluded: replacing it is the
+  # entire purpose of the function.
+  if (isTRUE(warn) && add_defaulted) {
+    unasked <- setdiff(intersect(names(derived), names(data)), "iso3c")
+    if (length(unasked)) {
+      wdj_warn(c(
+        "Overwriting {length(unasked)} column{?s} you did not ask for:
+         {.val {unasked}}.",
+        "i" = "{.arg add} defaults to
+               {.code c(\"iso3c\", \"iso2c\", \"continent\", \"region\")}.
+               Pass {.code add = \"iso3c\"} to add only the code, or rename
+               {cli::qty(length(unasked))}{?that column/those columns} to keep
+               {?it/them}."
+      ), class = "countryatlas_unasked_overwrite")
+    }
+  }
   data[intersect(names(derived), names(data))] <- NULL
-  dplyr::bind_cols(tibble::as_tibble(data), derived)
+  # Assign rather than bind_cols(as_tibble(data), derived), which stripped the
+  # sf class. `derived` has one row per row of `data`, so this appends the same
+  # columns in the same order; wdj_return_frame() then keeps sf as sf and
+  # normalises everything else to a tibble, as before.
+  for (nm in names(derived)) data[[nm]] <- derived[[nm]]
+  wdj_return_frame(data)
 }

@@ -9,8 +9,9 @@
 #' @format A list with three elements:
 #' \describe{
 #'   \item{countries}{A tibble, one row per country, with `iso3c`, `iso2c`,
-#'     `country`, classifications and curated indicators
-#'     (`gdp_per_capita`, `population`, `life_expectancy`, `co2_per_capita`).}
+#'     `country`, the classifications `continent`, `region` and `income`, and
+#'     the curated indicators `gdp_per_capita`, `population`,
+#'     `life_expectancy` and `co2_per_capita`.}
 #'   \item{sf}{`NULL` in the released package -- geometry is not bundled twice.
 #'     Attach it on demand with [attach_geometry()]:
 #'     `attach_geometry(world_snapshot$countries, geometry = "sf")` pulls the
@@ -28,8 +29,8 @@
 #' One row per country with the facts people constantly need and currently
 #' scrape together by hand.
 #'
-#' @format A tibble with one row per country and columns including `iso3c`,
-#'   `iso2c`, `country`, `continent`, `region`, `un_region`, `capital`,
+#' @format A tibble with one row per country and columns `iso3c`, `iso2c`,
+#'   `country`, `continent`, `region`, `un_region`, `income`, `capital`,
 #'   `capital_lat`, `capital_lon`, `centroid_lat`, `centroid_lon`, `area_km2`,
 #'   `currency`, `tld`, `landlocked`, `flag`.
 #'
@@ -65,8 +66,26 @@
 #' A curated, dated membership table for the common country groups.
 #'
 #' @format A tibble with columns `group`, `iso3c`, `country`.
-#' @source Curated from official membership lists (point-in-time; see the
-#'   package `NEWS` for the reference date).
+#' @section As of when:
+#' Membership is a snapshot taken on **2026-06-01**, carried on the table
+#' itself:
+#'
+#' ```r
+#' attr(country_groups_tbl, "as_of")
+#' #> [1] "2026-06-01"
+#' ```
+#'
+#' Read the attribute rather than this paragraph if you need the date in code;
+#' it is set from a single constant in `data-raw/build_datasets.R`, so it
+#' cannot drift from the data the way a hand-written date can. For membership
+#' at any other date use [country_groups_history] and
+#' [country_groups(as_of = )][country_groups()], which is the table this
+#' snapshot is a slice of.
+#'
+#' @source Curated from official membership lists, as of the date above. (This
+#'   used to point at the package `NEWS` for the reference date, where two
+#'   different dates were on record -- an Rd should not delegate a fact to a
+#'   changelog.)
 "country_groups_tbl"
 
 #' Equal-area world tile-grid layout
@@ -105,6 +124,124 @@
 #'     may since have been inherited by a successor (e.g. `YEM`).}
 #'   \item{dissolved}{Year the entity ceased to exist.}
 #'   \item{iso3c, country}{The successor state.}
+#'   \item{relation}{How the successor relates to the entity, per successor:
+#'     `"succession"` if it is a genuinely new state created at `dissolved`, or
+#'     `"continuation"` if the same state carried on (possibly with less
+#'     territory) or a state that already existed absorbed the entity. Sudan is
+#'     both at once -- `SDN` continued and `SSD` is new -- which is why the
+#'     relation is per successor rather than per entity. The distinction
+#'     matters: a `"continuation"` was *not* created at `dissolved`, so testing
+#'     its data against that year says nothing, and the code did not cease to
+#'     exist either. [audit_time_coverage()] keys on this column for both
+#'     reasons.}
 #' }
 #' @source Curated from ISO 3166-3 and the historical record.
 "historical_codes"
+
+#' Dated country-group membership
+#'
+#' When each country joined -- and where applicable left -- each of twelve
+#' international groups. The dated counterpart to [country_groups_tbl], which is
+#' a single current snapshot.
+#'
+#' A snapshot silently misstates any panel that spans an accession: an EU panel
+#' over 2015-2020 either includes the United Kingdom throughout or excludes it
+#' throughout, and both are wrong. [country_groups()] and [in_group()] read this
+#' table when given `as_of`.
+#'
+#' @format A tibble with `r nrow(countryatlas::country_groups_history)` rows:
+#' \describe{
+#'   \item{group}{Group name.}
+#'   \item{iso3c}{ISO 3166-1 alpha-3 code.}
+#'   \item{country}{Country name.}
+#'   \item{from}{Date membership took effect.}
+#'   \item{to}{The first date on which the country was no longer a member
+#'     (membership runs up to the day before), or `NA` for a current member.
+#'     The United Kingdom's EU `to` is therefore 2020-02-01: it left at the
+#'     end of 31 January 2020.}
+#' }
+#'
+#' @section Scope, and what is deliberately absent:
+#' Twelve groups are dated: EU, EuroZone, NATO, OECD, ASEAN, EFTA, GCC,
+#' Mercosur, Nordic, Visegrad, BRICS and G7. **Commonwealth, G20 and OPEC are
+#' not**, and that is a decision rather than an omission -- their histories
+#' involve suspensions, readmissions and contested dates that would have to be
+#' sourced case by case, and a fabricated date is worse than an absent one.
+#' `country_groups(as_of =)` warns and falls back to the snapshot for those.
+#'
+#' Dates are the treaty or accession date where one exists, otherwise 1 January
+#' of the accession year. The table is validated at build time against
+#' [country_groups_tbl]: the members current today must reproduce the snapshot
+#' exactly, for every group covered.
+#'
+#' @seealso [country_groups()], [in_group()], [country_timeline()]
+#' @examples
+#' # EFTA is the instructive one: most of its founders left, for the EU
+#' subset(country_groups_history, group == "EFTA")
+"country_groups_history"
+
+#' Disputed territories
+#'
+#' Territories whose status is contested, recorded so that a map can say so.
+#'
+#' **This table records that a dispute exists and who the parties are. It does
+#' not adjudicate, rank claims, or imply that any claim is better founded than
+#' another.** Where it says "administered by" it means de facto control as
+#' reported by the mapping sources the package already uses (Natural Earth), not
+#' recognition, legitimacy or endorsement.
+#'
+#' @format A tibble with `r nrow(countryatlas::disputed_territories)` rows:
+#' \describe{
+#'   \item{territory}{Common name of the territory.}
+#'   \item{iso3c}{ISO 3166-1 alpha-3 code where one exists, else `NA`. Most
+#'     disputed territories have none, which is why they cannot appear in an
+#'     `iso3c`-keyed dataset at all.}
+#'   \item{administered_by}{The party in de facto control, or `NA` where none
+#'     is. An ISO 3166-1 alpha-3 code where that party has one -- see the note
+#'     on codes below.}
+#'   \item{claimed_by}{Semicolon-separated claimants, coded as for
+#'     `administered_by`.}
+#'   \item{status}{One of `"un_member"`, `"un_observer"`,
+#'     `"partially_recognised"`, `"administered"` or `"claimed"`.}
+#'   \item{note}{One sentence of context, including why the row is here.}
+#' }
+#'
+#' @section What reads these columns:
+#' Nothing in the package does. The internal layer and note builders behind
+#' `world_map(disputes = )` and [dispute_policy()] key on `iso3c` alone, and no
+#' verb filters on the parties. `administered_by` and
+#' `claimed_by` are here for your own filtering -- "show me everything Morocco
+#' administers", "drop the territories with more than one claimant" -- and are
+#' documented precisely so that such a filter is writable. Their contents are
+#' validated at build time against the placeholder list below.
+#'
+#' @section The codes in `administered_by` and `claimed_by`:
+#' Mostly ISO 3166-1 alpha-3, so they join the `iso3c` spine directly -- but not
+#' entirely, and the exceptions are the point of the table. Six parties here are
+#' entities ISO assigns no code to, and they are written with a mnemonic
+#' placeholder instead: `ABK` (Abkhazia), `CYP-N` (Northern Cyprus), `OST`
+#' (South Ossetia), `PMR` (Transnistria), `SAH` (the Sahrawi Arab Democratic
+#' Republic) and `SOL` (Somaliland).
+#'
+#' Five of them -- `ABK`, `CYP-N`, `OST`, `PMR` and `SOL` -- appear in
+#' `administered_by` for the like-named territory, which has no ISO code of its
+#' own: the entity administers itself and ISO codes neither. `SAH` is the
+#' exception and worth knowing about: it appears only as a *claimant*, of
+#' Western Sahara, which ISO does code (`ESH`) and which `MAR` administers.
+#'
+#' None of the six are ISO codes, so none will resolve through
+#' [convert_country()] or any other `iso3c` lookup. Filter them out with
+#' `%in% country_codes()$iso3c` if you need a strictly ISO-keyed column.
+#'
+#' @section Scope:
+#' A documented subset, not the roughly 188 disputed areas the EU's
+#' data-visualisation guidance counts. The selection criterion is mechanical and
+#' checkable: territories that appear as a distinct unit or a contested boundary
+#' in Natural Earth at 1:110m or 1:50m, **and** have an ISO 3166-1 code, a
+#' widely-used user-assigned code, or a standard "disputed" label in ISO, UN M49
+#' or World Bank practice. That criterion requires nobody to judge the merits.
+#'
+#' @seealso [dispute_policy()], [check_dispute_coverage()], [world_map()]
+#' @examples
+#' disputed_territories[, c("territory", "iso3c", "status")]
+"disputed_territories"

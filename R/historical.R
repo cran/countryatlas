@@ -43,8 +43,15 @@ historical_aliases <- function() {
 }
 
 # Normalise free-text names for alias lookup.
+#
+# [\h\v], the package's Unicode whitespace class (see wdj_to_iso3c()), not
+# trimws()'s ASCII default or TRE's \s: a non-breaking space from a web paste
+# survived both, the alias missed, and "USSR<nbsp>" fell through to
+# countrycode, which resolves it to Russia alone -- the silent mis-resolution
+# dissolve_country() and check_country_match() exist to catch.
 normalize_historical <- function(x) {
-  ascii_lower(gsub("\\s+", " ", trimws(as.character(x))))
+  x <- trimws(as.character(x), whitespace = "[\\h\\v]")
+  ascii_lower(gsub("[\\h\\v]+", " ", x, perl = TRUE))
 }
 
 #' Resolve dissolved entities to their successor states
@@ -79,6 +86,9 @@ normalize_historical <- function(x) {
 #' dissolve_country("Yugoslavia")
 dissolve_country <- function(x, warn = TRUE) {
   check_bool(warn, "warn")
+  # Before as.character(), which deparses a data frame column-wise: a frame
+  # came back as the "countries" `c("USA", "FRA")` and `c(1, 2)`.
+  check_country_vector(x)
   x <- as.character(x)
   empty <- tibble::tibble(input = character(), historical = character(),
                           dissolved = integer(), iso3c = character(),
@@ -111,7 +121,10 @@ dissolve_country <- function(x, warn = TRUE) {
   out <- dplyr::bind_rows(out)
 
   if (isTRUE(warn)) {
-    miss <- unique(out$input[is.na(out$iso3c)])
+    # A missing input is not a name that failed to match: it came back as
+    # `NA` in the "matched neither" list, as country_timeline() did, while
+    # standardize_country() and convert_country() leave it unreported.
+    miss <- unique(out$input[is.na(out$iso3c) & !is.na(out$input)])
     if (length(miss)) {
       wdj_warn(c(
         "{length(miss)} name{?s} matched neither a historical entity nor a modern country:",

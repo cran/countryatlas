@@ -15,12 +15,39 @@
 # fonts into the session temp directory, which R deletes on exit. Nothing is
 # skipped: the widget still renders, just somewhere disposable.
 #
-# R_USER_CACHE_DIR/XDG_CACHE_HOME is redirected for the same reason even though
-# no current test needs it: `~/.cache` is the one tree the check walks
+# R_USER_CACHE_DIR *and* XDG_CACHE_HOME are redirected for the same reason even
+# though no current test needs it: `~/.cache` is the one tree the check walks
 # recursively, so it is where an R-level cache would be most visible. Doing so
 # also moves tools::R_user_dir("countryatlas", "cache"), which is harmless --
 # test-pre-cran-polish.R compares wdj_cache_dir() against a live R_user_dir()
 # call, so it still tells the check branch from the real one.
+#
+# Both variables, not just XDG_CACHE_HOME: R_user_dir(pkg, "cache") reads
+# R_USER_CACHE_DIR *first* and only falls back to XDG_CACHE_HOME, so setting the
+# fallback alone left the redirect at the mercy of the machine. Wherever
+# R_USER_CACHE_DIR happens to be set the cache escaped to the real user
+# directory -- which is how a suggested package's cache reaches `~/.cache/R/`
+# and reproduces the "new files in some other directories" NOTE that CRAN
+# raised against 1.0.0. comtradr's .onLoad creates ~/.cache/R/comtradr the
+# moment its namespace loads, which skip_if_not_installed("comtradr") does.
+#
+# `~/.cache/R/comtradr` used to be out of reach here, and for a more
+# surprising reason: it was not the tests that created it. `R CMD check`
+# resolves every `pkg::fun` reference in R/ to confirm the symbol exists, which
+# loads that namespace -- and comtradr's .onLoad writes its cache directory.
+# R/sources.R called `comtradr::ct_get_data()`, so the check created the
+# directory during its own static analysis, before any test or example ran.
+# Verified by elimination: the directory still appeared under
+# `--no-tests --no-examples --no-build-vignettes`, while installing the package
+# and calling `library(countryatlas)` and `country_sources()` in a fresh HOME
+# wrote nothing at all.
+#
+# The conclusion drawn from that -- "nothing here can prevent it" -- was wrong.
+# The write is caused by the *static* reference, so removing the static
+# reference removes the write: fetch_comtrade() now resolves the symbol with
+# getExportedValue() at run time, after need_pkg() has loaded the namespace on
+# the user's own behalf. Keep the redirect below anyway, since a suggested
+# package can create a user directory from a test as easily as from a check.
 #
 # One write is deliberately *not* handled here: `~/.cache/fontconfig`. That is
 # built by the system fontconfig library the first time R's cairo PNG device
@@ -32,6 +59,7 @@ local({
   withr::local_envvar(
     R_USER_DATA_DIR   = file.path(dir, "data"),
     R_USER_CONFIG_DIR = file.path(dir, "config"),
+    R_USER_CACHE_DIR  = file.path(dir, "cache"),
     XDG_CACHE_HOME    = file.path(dir, "cache"),
     .local_envir      = testthat::teardown_env()
   )

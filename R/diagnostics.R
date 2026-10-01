@@ -34,6 +34,9 @@ check_country_match <- function(x,
                                 custom_match = country_overrides(),
                                 suggest = TRUE) {
   check_bool(suggest, "suggest")
+  # Before as.character(): it deparses a data frame's columns into strings, so
+  # the guard inside wdj_to_iso3c() below never saw the frame.
+  check_country_vector(x)
   x <- as.character(x)
   iso3c <- wdj_to_iso3c(x, origin = origin, custom_match = custom_match)
   matched <- !is.na(iso3c)
@@ -43,16 +46,22 @@ check_country_match <- function(x,
   if (isTRUE(suggest) && any(!matched)) {
     known <- unique(stats::na.omit(countrycode::codelist$country.name.en))
     miss_idx <- which(!matched)
+    # trimws(): the guard was nzchar() alone, which lets a whitespace-only cell
+    # through -- and Jaro-Winkler finds spurious similarity between a two-space
+    # string and a name containing spaces, so `"  "` came back confidently
+    # suggesting "Congo - Kinshasa" at distance 0.29, well inside the threshold.
+    # A padded empty cell is the single most common thing a CSV import produces.
+    blank <- function(v) is.na(v) || !nzchar(trimws(v))
     if (has_pkg("stringdist")) {
       for (i in miss_idx) {
-        if (is.na(x[i]) || !nzchar(x[i])) next
+        if (blank(x[i])) next
         d <- stringdist::stringdist(tolower(x[i]), tolower(known), method = "jw")
         best <- which.min(d)
         if (length(best) && d[best] < 0.35) suggestion[i] <- known[best]
       }
     } else {
       for (i in miss_idx) {
-        if (is.na(x[i]) || !nzchar(x[i])) next
+        if (blank(x[i])) next
         d <- utils::adist(tolower(x[i]), tolower(known))[1, ]
         best <- which.min(d)
         if (length(best) && d[best] <= 3) suggestion[i] <- known[best]
@@ -77,7 +86,10 @@ check_country_match <- function(x,
 #'
 #' @param data A country-level (or map-ready) data frame.
 #' @param indicator Optional character vector of value columns to report `NA`
-#'   rates for. If `NULL`, all numeric columns are used.
+#'   rates for. If `NULL`, all numeric columns are used. `na_rates` covers every
+#'   one of them; the `by_group` breakdown is computed for a single indicator --
+#'   the first -- and names it in an `indicator` column so it cannot be mistaken
+#'   for the group's overall coverage.
 #' @param by Grouping for the coverage breakdown: `"region"` (default),
 #'   `"income"` or `"continent"`.
 #'
@@ -85,29 +97,68 @@ check_country_match <- function(x,
 #'   `na_rates` and `by_group`. It has a `print()` method, so at the console you
 #'   see a formatted report rather than the raw list; reach into the elements by
 #'   name to use the numbers programmatically.
+#'
+#'   * `unmatched` -- one row per input value that did not resolve to an ISO
+#'     code. Empty is the good case.
+#'   * `na_rates` -- one row per indicator: `n` is the number of countries
+#'     *considered*, `n_missing` how many of them lack a value, and `na_rate`
+#'     is `n_missing / n`. An infinite value counts as lacking one: no map can
+#'     draw it, and [coverage_map()] shows it as missing too.
+#'   * `by_group` -- one row per group: `n_countries` is how many countries are
+#'     *in that group*, and `na_rate` is the share of those lacking a value.
+#'     The counts sum to `n`.
+#'
+#'   Both `n` and `by_group`'s `n_countries` are **denominators** -- everything
+#'   counted, not everything present. That is the opposite orientation from
+#'   [map_provenance()], whose `n_countries` is the numerator (countries drawn
+#'   *with* a value) and whose `n_total` is the denominator. The two verbs
+#'   report the same coverage from opposite ends, so on 215 countries with 24
+#'   missing this gives `n = 215` where `map_provenance()` gives
+#'   `n_countries = 191`.
 #' @export
 #' @examples
 #' audit_coverage(countryatlas::world_snapshot$countries)
 audit_coverage <- function(data,
                            indicator = NULL,
                            by = c("region", "income", "continent")) {
-  by <- match.arg(by)
+  by <- rlang::arg_match(by)
+  # as_tibble() happily turns a bare vector into a one-column tibble called
+  # `value`, which has no iso3c and no indicators -- so a character vector of
+  # country codes produced a coverage report with all three tables empty,
+  # reading as "perfect coverage" when nothing had been examined at all.
+  # standardize_country() already refuses a non-frame; this is the same refusal.
+  if (!is.data.frame(data)) {
+    wdj_abort(c(
+      "{.arg data} must be a data frame.",
+      "x" = "Got {.cls {class(data)[1]}}.",
+      "i" = "Coverage is measured per indicator column, so there has to be a
+             table to measure."
+    ))
+  }
+  # Before as_tibble(), for the same reason as world_table().
+  check_dup_cols(data)
   data <- tibble::as_tibble(data)
   # Reduce to one row per country. Gating on `group` only caught polygon
   # frames; an sf frame has no `group` column yet still repeats divided
   # countries, which skewed both `n` and every NA rate.
-  if ("iso3c" %in% names(data)) {
-    data <- dplyr::distinct(data, .data$iso3c, .keep_all = TRUE)
-  }
+  data <- distinct_countries(data)
 
   unmatched <- if ("iso3c" %in% names(data)) {
     key <- if ("country" %in% names(data)) "country" else "iso3c"
-    miss <- data[is.na(data$iso3c), , drop = FALSE]
+    # blank_key(), not is.na(): read.csv() without na.strings = "" gives a
+    # blank for an empty cell, a blank code matches nothing, and
+    # distinct_countries() above already treats it as uncoded, so a row it
+    # kept for that reason was then left out of the unmatched list.
+    miss <- data[blank_key(data$iso3c), , drop = FALSE]
     tibble::tibble(country = as.character(miss[[key]]))
   } else {
     tibble::tibble(country = character(0))
   }
 
+  ind_expr <- substitute(indicator)
+  indicator <- tryCatch(force(indicator), error = function(e) {
+    abort_bare_column(ind_expr, "indicator", e)
+  })
   if (is.null(indicator)) {
     num <- names(data)[vapply(data, is.numeric, logical(1))]
     indicator <- setdiff(num, c("year", "long", "lat", "group", "order",
@@ -115,19 +166,37 @@ audit_coverage <- function(data,
   } else {
     check_cols(data, indicator)
   }
+  # has_value(), not is.na(): an infinity is not NA, so it counted as present
+  # here while coverage_map() -- "the same thing as a map" by both help pages
+  # -- painted it Missing, as every map verb draws it. One audit, two answers.
+  lacking <- function(v) !has_value(v)
   na_rates <- tibble::tibble(
     indicator = indicator,
     n = nrow(data),
-    n_missing = vapply(indicator, function(i) sum(is.na(data[[i]])), integer(1)),
-    na_rate = vapply(indicator, function(i) mean(is.na(data[[i]])), numeric(1))
+    # unname(): vapply() names its result after `indicator`, so both columns
+    # came out as named vectors and `a$na_rates$na_rate` handed back
+    # c(gdp = 0.1) rather than 0.1. Same treatment country_network() gives
+    # rowSums() for the same reason.
+    n_missing = unname(vapply(indicator, function(i) sum(lacking(data[[i]])),
+                              integer(1))),
+    na_rate = unname(vapply(indicator, function(i) mean(lacking(data[[i]])),
+                            numeric(1)))
   )
 
   by_group <- if (by %in% names(data) && length(indicator)) {
+    # One indicator, named. The rate has always been computed on indicator[1] --
+    # with the default `indicator = NULL` that is whichever numeric column
+    # happens to come first -- but the column was called plain `na_rate` under a
+    # heading reading "Coverage by group", so it read as the group's overall
+    # coverage while the other indicators were silently left out. Saying which
+    # one it is costs a column and removes the ambiguity.
+    focus <- indicator[1]
     data %>%
       dplyr::group_by(.data[[by]]) %>%
       dplyr::summarise(
         n_countries = dplyr::n(),
-        na_rate = mean(is.na(.data[[indicator[1]]])),
+        indicator = focus,
+        na_rate = mean(lacking(.data[[focus]])),
         .groups = "drop"
       ) %>%
       dplyr::arrange(dplyr::desc(.data$na_rate))
@@ -152,10 +221,21 @@ audit_coverage <- function(data,
 #' @param threshold Maximum string distance to accept a repair (0 = identical,
 #'   1 = unrelated). Lower is stricter; default `0.2`. Uses Jaro-Winkler when
 #'   `stringdist` is installed, otherwise a length-normalised edit distance.
-#'   The fallback is the more conservative of the two -- it repairs a subset of
-#'   what Jaro-Winkler would, mainly missing transposed letters ("Frnace"), and
-#'   never picks a different country -- so results can differ between machines
-#'   depending on whether `stringdist` is available.
+#'   The fallback repairs a subset of what Jaro-Winkler would: it charges two
+#'   edits for a transposition, so at the default threshold `"Germny"` is
+#'   repaired (one edit out of seven characters, 0.14) but `"Frnace"` is *not*
+#'   (two out of six, 0.33). Jaro-Winkler scores that transposition 0.06 and
+#'   repairs it.
+#'
+#'   **Install `stringdist` if the repairs matter.** The two metrics choose the
+#'   nearest known name independently, so they can land on *different
+#'   countries*, not merely on fewer of them: `"Libia"` is repaired to Liberia
+#'   with `stringdist` and to Libya without it, and both are accepted at the
+#'   default threshold. Neither metric is uniformly better -- Jaro-Winkler also
+#'   repairs `"Maroco"` to Monaco rather than Morocco -- which is the real
+#'   reason to check the reported substitutions rather than to trust either.
+#'   `verbose = TRUE` (the default) prints them, and they are attached as the
+#'   `"repairs"` attribute for programmatic checking.
 #' @param origin countrycode origin scheme (default `"country.name"`).
 #' @param verbose Whether to message the substitutions made (default `TRUE`).
 #'
@@ -172,6 +252,9 @@ repair_country_names <- function(x, threshold = 0.2, origin = "country.name",
                                  verbose = TRUE) {
   check_bool(verbose, "verbose")
   check_number(threshold, "threshold", lo = 0, hi = 1)
+  # Before as.character(), for the same reason as check_country_match(): this
+  # coerces first, so the guard there never saw the frame either.
+  check_country_vector(x)
   x <- as.character(x)
   report <- check_country_match(x, origin = origin, suggest = TRUE)
   out <- x

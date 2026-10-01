@@ -29,12 +29,25 @@ per_capita <- function(data, value, pop = NULL, suffix = "_per_capita",
   check_numeric_col(data, val_name)
   pop_q <- rlang::enquo(pop)
   if (!rlang::quo_is_null(pop_q)) {
-    pop_name <- rlang::as_name(pop_q)
+    # quo_arg_name(), not as_name(): `value` above is validated and `pop` was
+    # not, so per_capita(d, v, pop = p * 2) reached the user as rlang's own
+    # "Can't convert a call to a string" -- naming neither the argument nor
+    # what it wanted. Nor was the column's existence checked, so a typo left
+    # pop_vec NULL and the division failed with base R's "replacement has 0
+    # rows, data has 4".
+    pop_name <- quo_arg_name(pop_q, "pop")
+    check_cols(data, pop_name)
+    check_numeric_col(data, pop_name)
     pop_vec <- data[[pop_name]]
   } else {
     if (!"iso3c" %in% names(data)) {
       wdj_abort("{.arg data} needs an {.field iso3c} column to fetch population.")
     }
+    # The fetched population is joined on `year`, and a character year (what
+    # read.csv() gives for "2020") made dplyr refuse with "Can't join
+    # `x$year` with `y$year` due to incompatible types", after the download.
+    # deflate() carries this guard for the same join; checked before fetching.
+    if ("year" %in% names(data)) check_numeric_col(data, "year")
     years <- if ("year" %in% names(data)) unique(stats::na.omit(data$year)) else NULL
     # An all-NA (or absent) year column leaves nothing to bound the fetch with;
     # min()/max() would return Inf/-Inf and the World Bank request would be
@@ -75,8 +88,39 @@ per_capita <- function(data, value, pop = NULL, suffix = "_per_capita",
   check_string(suffix, "suffix")
   new_col <- paste0(val_name, suffix)
   warn_overwrite(data, new_col)
-  data[[new_col]] <- data[[val_name]] / pop_vec
-  tibble::as_tibble(data)
+  # A zero population gave Inf -- exactly what deflate() and to_ppp() were
+  # already fixed for, under a test called "an unusable deflator or PPP factor
+  # gives NA, not Inf" whose comment notes that Inf "propagated silently into
+  # every scale and summary downstream". per_capita() is the most used of the
+  # family and never got the fix.
+  #
+  # Zero and non-finite only: a *negative* population passes through, because
+  # "share_of_world and per_capita pass through odd but valid values" pins that
+  # deliberately -- "negative values are the caller's business; the arithmetic
+  # stays honest". Division by zero is the only part we cannot report.
+  usable <- is.finite(pop_vec) & pop_vec != 0
+  pop_label <- if (!rlang::quo_is_null(pop_q)) pop_name else "population"
+  # length() first: !any(logical(0)) is TRUE, so a zero-row frame was told
+  # it had nothing usable rather than simply having nothing.
+  if (length(usable) && !any(usable)) {
+    wdj_warn(c(
+      "No usable {.field {pop_label}}, so nothing could be put per capita.",
+      "i" = "A denominator must be finite and non-zero; {.field {new_col}} is
+             {.val {NA}} throughout."
+    ), class = "countryatlas_no_rates")
+  } else if (any(!usable)) {
+    # "zero, missing or infinite": `usable` is is.finite() & != 0, so an
+    # infinite population lands here too, and a message naming only the other
+    # two sent the reader looking for a zero or a gap that was not there.
+    wdj_warn(c(
+      "{sum(!usable)} row{?s} ha{?s/ve} a zero, missing or infinite
+       {.field {pop_label}}, so {.field {new_col}} is {.val {NA}} there.",
+      "i" = "A zero population would divide to {.val {Inf}}; a missing one has
+             nothing to divide by. Negative populations pass through."
+    ), class = "countryatlas_unusable_rows")
+  }
+  data[[new_col]] <- num_ifelse(usable, data[[val_name]] / pop_vec)
+  wdj_return_frame(data)
 }
 
 #' Roll countries up to region / income / continent
@@ -110,7 +154,16 @@ per_capita <- function(data, value, pop = NULL, suffix = "_per_capita",
 aggregate_regions <- function(data, value, by = "region", fun = "sum",
                               weight = NULL) {
   val_name <- quo_arg_name(rlang::enquo(value), "value")
-  fun <- match.arg(fun, c("sum", "mean", "median", "min", "max", "weighted_mean"))
+  fun <- rlang::arg_match(fun, c("sum", "mean", "median", "min", "max", "weighted_mean"))
+  # `by` takes strings, and `value` right above it takes a bare column, so
+  # writing `by = region` is the natural slip. It failed while `by` was being
+  # evaluated -- base R's "object 'region' not found", which names neither the
+  # argument nor the package -- before the check just below could run. Three
+  # other character column arguments already caught this.
+  by_expr <- substitute(by)
+  by <- tryCatch(force(by), error = function(e) {
+    abort_bare_column(by_expr, "by", e)
+  })
   if (!is.character(by) || !length(by) || anyNA(by)) {
     wdj_abort(c("{.arg by} must name at least one grouping column.",
                 "x" = if (!length(by)) "Got 0 values." else "Got {.val {by}}."))
@@ -122,6 +175,22 @@ aggregate_regions <- function(data, value, by = "region", fun = "sum",
   # regional total of 497,265 into 280,951,373, silently. We cannot just
   # de-duplicate on iso3c, because `by = c("region", "year")` panel roll-ups
   # legitimately have many rows per country, so say what looks wrong instead.
+  # An sf frame is the one geometry shape this does not apply to: it carries one
+  # row per country, so the totals are right and the warning below would
+  # misinform. What it did instead was crash -- dplyr's sf-aware summarise()
+  # unions the geometries per group, and the bundled Natural Earth polygons
+  # include two invalid ones (SDN and MOZ), so aggregate_regions(sf_frame) died
+  # with the raw GEOS error "TopologyException: side location conflict". The documented
+  # return is "a tibble of `by` plus the aggregated value", so the geometry is
+  # not wanted here at all: drop it, as smooth_rates(), morans_i() and
+  # world_table() already do.
+  if (is_sf(data)) {
+    data <- sf_drop(data)
+  }
+  # Checked after the drop, not as its `else`: a frame can be sf *and* carry
+  # long/lat/group columns, and dropping the geometry leaves the vertex rows
+  # behind. Guarding with `else if` skipped the warning for exactly that frame
+  # -- the one case where the totals really are inflated.
   if (has_map_geometry(data)) {
     wdj_warn(c(
       "{.arg data} looks like it has map geometry attached.",
@@ -151,12 +220,20 @@ aggregate_regions <- function(data, value, by = "region", fun = "sum",
 
   grouped <- dplyr::group_by(data, dplyr::across(dplyr::all_of(by)))
   out <- if (fun == "weighted_mean") {
-    w_name <- rlang::as_name(w_q)
+    w_name <- quo_arg_name(w_q, "weight")
+    check_cols(data, w_name)
+    check_numeric_col(data, w_name)
     dplyr::summarise(
       grouped,
       "{val_name}" := {
         ok <- !is.na(.data[[val_name]]) & !is.na(.data[[w_name]])
-        if (!any(ok)) NA_real_ else
+        wsum <- sum(.data[[w_name]][ok])
+        # weighted.mean() divides by the total weight, so a group whose weights
+        # are all zero (or cancel out) came back NaN -- the very failure the
+        # unweighted branch below goes to some length to avoid, and which the
+        # documented promise of NA for an ungroundable group rules out. No
+        # weight anywhere is the same absence as no data.
+        if (!any(ok) || !is.finite(wsum) || wsum == 0) NA_real_ else
           stats::weighted.mean(.data[[val_name]][ok], .data[[w_name]][ok])
       },
       .groups = "drop"
@@ -194,7 +271,9 @@ aggregate_regions <- function(data, value, by = "region", fun = "sum",
 #' @param value The value column to rank (unquoted).
 #' @param within Optional grouping column(s) (unquoted or character) to rank
 #'   within.
-#' @param desc Rank descending (largest = rank 1); default `TRUE`.
+#' @param desc Rank descending (largest = rank 1); default `TRUE`. This affects
+#'   `rank` only: `percentile` is always the percentile of the *value* (0 is the
+#'   lowest value), so under `desc = FALSE` rank 1 has percentile 0.
 #'
 #' @return `data` with `rank`, `percentile` and `z_score` columns added.
 #' @export
@@ -210,10 +289,23 @@ rank_countries <- function(data, value, within = NULL, desc = TRUE) {
   check_numeric_col(data, val_name)
   within_q <- rlang::enquo(within)
   if (!rlang::quo_is_null(within_q)) {
+    # The fallback is deliberate: `within = c("region", "income")` is a call,
+    # so as_name() cannot read it and the names have to be evaluated. But it
+    # swallowed every other call too -- `within = q * 2` evaluated to numbers,
+    # was coerced to strings and handed to all_of() as column names, surfacing
+    # as dplyr's "non-numeric argument to binary operator". Only a character
+    # vector is a column list; anything else gets the message every other
+    # column argument here gives.
     within_cols <- tryCatch(
       rlang::as_name(within_q),
-      error = function(e) as.character(rlang::eval_tidy(within_q))
+      error = function(e) {
+        val <- tryCatch(rlang::eval_tidy(within_q), error = function(e2) NULL)
+        if (is.character(val)) as.character(val) else {
+          quo_arg_name(within_q, "within")
+        }
+      }
     )
+    check_cols(data, within_cols)
     data <- dplyr::group_by(data, dplyr::across(dplyr::all_of(within_cols)))
   } else {
     # `within` is the only thing that should decide the ranking scope. A grouped
@@ -224,14 +316,40 @@ rank_countries <- function(data, value, within = NULL, desc = TRUE) {
     data <- dplyr::ungroup(data)
   }
   ord <- if (isTRUE(desc)) function(x) dplyr::desc(x) else function(x) x
+  # A repeated country-year is ranked twice: on a frame with USA-2020 duplicated
+  # the same country came back holding ranks 1 and 3, which no reading of the
+  # output can reconcile. interpolate_missing() and complete_years() already
+  # report this shape; ranking has at least as much reason to.
+  check_panel_unique(data,
+    why = "A repeated country-year is ranked twice, so one country holds two
+           different ranks.")
   warn_overwrite(data, c("rank", "percentile", "z_score"))
+  # scale() drops NA (colMeans(na.rm = TRUE)) but not an infinity, which runs
+  # straight through the mean and the SD -- so ONE Inf turned every z_score to
+  # NaN while `rank` and `percentile`, both rank-based and both untroubled by
+  # an infinity, still looked correct. A silent all-NaN column beside two
+  # plausible ones is the easiest kind of corruption to miss.
+  n_inf <- sum(is.infinite(data[[val_name]]))
+  if (n_inf) {
+    wdj_warn(c(
+      "{n_inf} value{?s} in {.field {val_name}} {?is/are} infinite, so
+       {.field z_score} is undefined.",
+      "i" = "{.field rank} and {.field percentile} are rank-based and are
+             unaffected. Returning {.code NA} for {.field z_score}."
+    ), class = "countryatlas_undefined_index")
+  }
   out <- dplyr::mutate(
     data,
     rank = dplyr::min_rank(ord(.data[[val_name]])),
     percentile = dplyr::percent_rank(.data[[val_name]]),
-    z_score = as.numeric(scale(.data[[val_name]]))
+    z_score = zscore_finite(.data[[val_name]])
   )
-  dplyr::ungroup(out)
+  # ungroup() alone only strips the grouping: with no `within`, the frame is
+  # ungrouped above, so mutate() left a data.frame a data.frame and this verb
+  # returned one where its siblings return a tibble. The four other verbs here
+  # ended the same way and happened to be safe only because group_by() had
+  # already made `out` a tibble -- one edit away from the same bug.
+  wdj_return_frame(out)
 }
 
 #' Fill or interpolate panel gaps
@@ -248,17 +366,38 @@ rank_countries <- function(data, value, within = NULL, desc = TRUE) {
 #' @param method `"none"` (default; just complete the grid), `"locf"` or
 #'   `"linear"`.
 #'
-#' @return A completed (and optionally filled) panel tibble.
+#' @return A completed (and optionally filled) panel tibble -- or an `sf`
+#'   frame, if `data` was one; each invented row carries its country's geometry.
 #' @export
 #' @examples
 #' df <- data.frame(iso3c = "USA", year = c(2000L, 2002L), gdp = c(1, 3))
 #' complete_years(df, 2000:2002, method = "linear")
 complete_years <- function(data, years = NULL, value = NULL,
                            method = c("none", "locf", "linear")) {
-  method <- match.arg(method)
+  method <- rlang::arg_match(method)
   if (!all(c("iso3c", "year") %in% names(data))) {
     wdj_abort("{.arg data} must have {.field iso3c} and {.field year} columns.")
   }
+  # The `years` argument below is checked carefully; the `year` *column* was
+  # not. A character one reached dplyr's "Can't join `x$year` with `y$year` due
+  # to incompatible types", which names dplyr's internals rather than the
+  # column, and a factor got base R's bare "'min' not meaningful for factors".
+  # Both come straight out of a CSV read.
+  check_numeric_col(data, "year")
+  # And non-missing: the span is inferred with seq(min(year), max(year)), which
+  # on a single NA gives base R's "'from' must be a finite number" -- naming
+  # neither the column nor the package. The `years` *argument* has been checked
+  # for NA all along; the column it defaults from had not. One blank year cell
+  # in a CSV is enough.
+  if (nrow(data) && anyNA(data$year)) {
+    wdj_abort(c(
+      "{.field year} must not contain missing values.",
+      "x" = "{sum(is.na(data$year))} of {nrow(data)} row{?s} ha{?s/ve} no year.",
+      "i" = "A year grid cannot be completed around a row whose year is
+             unknown. Drop or fill those rows first."
+    ))
+  }
+  check_panel_unique(data)
   # A frame with no rows has no span to infer, so leave `years` alone rather
   # than reaching seq(min(numeric(0)), max(numeric(0))).
   if (is.null(years) && nrow(data)) {
@@ -268,6 +407,16 @@ complete_years <- function(data, years = NULL, value = NULL,
   # introduced by coercion" warning, and a zero-length one silently completed
   # nothing. Anything the caller passed is still checked, 0 rows or not.
   if (!is.null(years)) {
+    # Function or environment first: anyNA() below errors outright on an
+    # environment ("environments cannot be coerced to other types"), inside
+    # the condition, and {.val } in the message would die on a closure -- so
+    # neither reached the intended error. Same guard as check_string().
+    if (is.function(years) || is.environment(years)) {
+      wdj_abort(c(
+        "{.arg years} must be a non-empty numeric vector without {.code NA}.",
+        "x" = "Got {.cls {class(years)[1]}}."
+      ))
+    }
     if (!is.numeric(years) || !length(years) || anyNA(years)) {
       wdj_abort(c(
         "{.arg years} must be a non-empty numeric vector without {.code NA}.",
@@ -278,6 +427,10 @@ complete_years <- function(data, years = NULL, value = NULL,
   }
 
   measures <- setdiff(names(data)[vapply(data, is.numeric, logical(1))], "year")
+  value_expr <- substitute(value)
+  value <- tryCatch(force(value), error = function(e) {
+    abort_bare_column(value_expr, "value", e)
+  })
   if (is.null(value)) {
     value <- measures
   } else {
@@ -288,7 +441,7 @@ complete_years <- function(data, years = NULL, value = NULL,
   # over. Every other panel helper returns 0 rows for a 0-row frame; this one
   # died inside seq() on "'from' must be a finite number", or -- with `years`
   # supplied -- on tidyr's "Can't recycle `year` (size 3) to size 0".
-  if (!nrow(data)) return(tibble::as_tibble(data))
+  if (!nrow(data)) return(wdj_return_frame(data))
 
   # Carry static attributes (country name, region, ...) into the rows `complete()`
   # invents. Excluding only `value` here meant a numeric column the caller left
@@ -298,30 +451,91 @@ complete_years <- function(data, years = NULL, value = NULL,
   # named or not; an unnamed one stays NA in the new rows.
   static <- setdiff(names(data), c("year", measures, value))
 
+  # Keyed on unit_key(), not iso3c: two rows whose iso3c did not resolve were
+  # one country to group_by(), so they shared a single completed year grid and
+  # the geometry carry below -- which matched on iso3c, where NA matches NA --
+  # copied one unidentified country's polygon onto the other's invented rows.
+  # iso3c is filled downup like the other static columns now that it is no
+  # longer the grouping column; it is constant within a unit either way.
+  # Sorted by year before anything is carried. complete() lays the requested
+  # grid out first and appends the rows it did not ask for (a year the data
+  # has but `years` omits) after it, so a panel of 1999 and 2001 completed to
+  # 2000:2002 came back as 2000, 2001, 2002, 1999. "locf" then carried in row
+  # order, not time order: 2000 stayed NA though 1999 held a value, and the
+  # frame came back out of order. "linear" sorted for itself; "locf" did not.
   out <- data %>%
-    dplyr::group_by(.data$iso3c) %>%
+    group_by_unit() %>%
     tidyr::complete(year = years) %>%
-    tidyr::fill(dplyr::all_of(setdiff(static, "iso3c")),
+    dplyr::arrange(.data$year, .by_group = TRUE) %>%
+    tidyr::fill(dplyr::all_of(setdiff(static, ".wdj_unit")),
                 .direction = "downup")
 
   if (method == "locf") {
     out <- tidyr::fill(out, dplyr::all_of(value), .direction = "down")
   } else if (method == "linear") {
     out <- out %>%
-      dplyr::arrange(.data$year, .by_group = TRUE) %>%
+      dplyr::arrange(year_sort_key(.data$year), .by_group = TRUE) %>%
       dplyr::mutate(dplyr::across(
         dplyr::all_of(value),
         ~ wdj_interp_linear(.data$year, .x)
       ))
   }
-  dplyr::ungroup(out)
+  # Two separate sf problems here. First: tidyr::complete() gives an invented
+  # row an *empty* geometry rather than NA, so the tidyr::fill() above skips it
+  # -- nothing is missing as far as fill() is concerned -- and every completed
+  # year came back with no shape at all. That defeats the stated purpose:
+  # a panel completed so an animation "does not flicker on missing years"
+  # instead rendered those years blank. Geometry is static per country, so
+  # carry each country's own shape across its invented rows.
+  if (is_sf(data)) {
+    gcol <- attr(data, "sf_column")
+    if (!is.null(gcol) && gcol %in% names(out) && inherits(out[[gcol]], "sfc")) {
+      g <- out[[gcol]]
+      gone <- sf::st_is_empty(g)
+      if (any(gone) && any(!gone)) {
+        # On the unit key, which unit_key() never leaves NA -- matching on iso3c
+        # paired an invented row with whatever other unresolved row had a
+        # shape, because match() treats NA as equal to NA.
+        src <- which(!gone)[match(out$.wdj_unit[gone], out$.wdj_unit[!gone])]
+        have <- !is.na(src)
+        g[which(gone)[have]] <- g[src[have]]
+        out[[gcol]] <- g
+      }
+    }
+  }
+  # Second: complete() drops the `sf` class while leaving that column intact,
+  # so the frame was unplottable even once the geometry was right.
+  wdj_return_frame(wdj_restore_sf(out, data))
 }
 
 # Linear interpolation of interior NAs (no extrapolation beyond observed range).
 wdj_interp_linear <- function(x, y) {
-  ok <- !is.na(y)
+  # approx() coerces a factor x with as.numeric(), which yields LEVEL INDICES:
+  # a factor year interpolated against 1, 2, 3, 4 in level order instead of
+  # against the years themselves, so with rule = 1 the targets fell outside the
+  # anchors and came back NA -- an unfilled gap where the numeric-year panel
+  # filled it, and no warning. See year_sort_key(); a Date x is left alone and
+  # still goes through approx() numerically, as before.
+  x <- year_sort_key(x)
+  # An anchor needs a position as well as a value. A row with no year handed
+  # approx() an NA x, which it drops, so a country with two observations,
+  # one of them undated, left a single anchor and approx() died on "need at
+  # least two non-NA values to interpolate" inside a dplyr across() error.
+  ok <- !is.na(y) & !is.na(x)
   if (sum(ok) < 2L) return(y)
-  stats::approx(x[ok], y[ok], xout = x, rule = 1)$y
+  # approx() collapses tied x-values to their mean, and says so with a warning
+  # that reaches the caller through dplyr as "There was 1 warning in
+  # `dplyr::mutate()`" -- naming neither the column nor the cause. A tie here
+  # can only be a repeated country-year, which the callers now report by name,
+  # so this adds nothing. Muffled by message so any other warning still gets
+  # through.
+  withCallingHandlers(
+    stats::approx(x[ok], y[ok], xout = x, rule = 1)$y,
+    warning = function(w) {
+      if (grepl("collapsing to unique", conditionMessage(w), fixed = TRUE)) {
+        invokeRestart("muffleWarning")
+      }
+    })
 }
 
 #' Year-on-year (or compound) growth rate
@@ -334,48 +548,189 @@ wdj_interp_linear <- function(x, y) {
 #' @param value The value column (unquoted).
 #' @param type `"yoy"` (default, period-over-period) or `"cagr"` (compound
 #'   annual growth rate vs. the first non-`NA` year).
+#'   `"cagr"` needs a positive ratio at both ends, so a negative value gives
+#'   `NA` for that row and a non-positive or infinite base year gives `NA`
+#'   for that country, each with a warning; a value of exactly `0` is a
+#'   legitimate annualised -100%. `"yoy"` is a plain ratio change and is defined for
+#'   negative values, but not after a zero or an infinity: neither has a
+#'   ratio, so that row is `NA` (with a warning) rather than `Inf` or -100%.
 #' @param suffix Suffix for the new column (default `"_growth"`).
 #'
 #' @return `data` with a growth-rate column added (a proportion, so 0.03 = 3%).
+#'   Rows come back sorted by `iso3c` then `year`: the calculation reads each
+#'   country's series in time order, so a row-aligned vector held alongside
+#'   `data` will no longer line up.
 #' @export
 #' @examples
 #' df <- data.frame(iso3c = "USA", year = 2000:2002, gdp = c(100, 110, 121))
 #' growth_rate(df, gdp)
 growth_rate <- function(data, value, type = c("yoy", "cagr"),
                         suffix = "_growth") {
-  type <- match.arg(type)
+  type <- rlang::arg_match(type)
   val_name <- quo_arg_name(rlang::enquo(value), "value")
-  if (!all(c("iso3c", "year") %in% names(data))) {
-    wdj_abort("{.arg data} must have {.field iso3c} and {.field year} columns.")
-  }
-  if (!val_name %in% names(data)) {
-    wdj_abort("Column {.val {val_name}} not found in {.arg data}.")
-  }
+  check_panel_cols(data, val_name)
   check_numeric_col(data, val_name)
   check_string(suffix, "suffix")
   new_col <- paste0(val_name, suffix)
+  # Only "yoy" needs this: "cagr" divides by the actual year span, so a gap
+  # is already handled there.
+  if (identical(type, "yoy")) warn_irregular_years(data, "the growth rate")
+  # ... and only "cagr" needs a numeric year, because only it does arithmetic
+  # on one. A character year reached `.data$year - y0` and surfaced as a dplyr
+  # mutate error quoting an internal expression rather than naming the column.
+  # Guarding both branches would reject input that "yoy" handles correctly.
+  if (identical(type, "cagr")) check_numeric_col(data, "year")
   warn_overwrite(data, new_col)
   out <- data %>%
-    dplyr::group_by(.data$iso3c) %>%
-    dplyr::arrange(.data$year, .by_group = TRUE)
+    group_by_unit() %>%
+    dplyr::arrange(year_sort_key(.data$year), .by_group = TRUE)
+  n_zero <- 0L
+  n_inf <- 0L
+  inf_base <- character(0)
+  zero_base <- character(0)
   out <- if (type == "yoy") {
-    dplyr::mutate(
+    # A change from zero has no ratio: 5 after 0 divided to Inf and 0 after 0
+    # to NaN, both in silence. "cagr" refuses a non-positive base for the same
+    # reason, and per_capita(), deflate(), to_ppp() and index_to() all give NA
+    # for a zero denominator rather than let an infinity run into every scale
+    # and summary downstream: a map of the column drew the country as
+    # no-data while its value read as the largest growth in the table.
+    # An infinite previous value has no ratio either: anything finite over it
+    # is 0, so the row after an Inf came back as -1 -- a confident -100% for a
+    # series that simply went on -- while the Inf row itself reads Inf, which
+    # is honest. Same NA as after a zero, reported alongside it.
+    out <- dplyr::mutate(
       out,
-      "{new_col}" := .data[[val_name]] / dplyr::lag(.data[[val_name]]) - 1
+      .wdj_prev = dplyr::lag(.data[[val_name]]),
+      "{new_col}" := num_ifelse(is.finite(.data$.wdj_prev) & .data$.wdj_prev != 0,
+                                .data[[val_name]] / .data$.wdj_prev - 1)
     )
+    n_zero <- sum(!is.na(out$.wdj_prev) & out$.wdj_prev == 0 &
+                    !is.na(out[[val_name]]))
+    n_inf <- sum(is.infinite(out$.wdj_prev) & !is.na(out[[val_name]]))
+    out$.wdj_prev <- NULL
+    out
   } else {
-    dplyr::mutate(
+    out <- dplyr::mutate(
       out,
+      .wdj_inf_base = is.infinite(
+        .data[[val_name]][which(!is.na(.data[[val_name]]))[1]]),
+      .wdj_zero_base = .data[[val_name]][which(!is.na(.data[[val_name]]))[1]] == 0,
       "{new_col}" := {
         base_i <- which(!is.na(.data[[val_name]]))[1]
         v0 <- .data[[val_name]][base_i]; y0 <- .data$year[base_i]
         n <- .data$year - y0
-        ifelse(n > 0 & !is.na(v0) & v0 > 0,
+        # `v0 > 0` guarded the base but not the current value, and a
+        # fractional power of a negative ratio is NaN -- so one negative year
+        # in an otherwise positive series put a bare NaN in the column,
+        # silently. Only a *negative* current value is excluded: a value of
+        # exactly 0 gives (0)^(1/n) - 1 = -1, an annualised -100%, which is
+        # both correct and the informative answer for a series that went to
+        # nothing. A non-positive base stays NA as before -- there is no ratio
+        # to take.
+        # is.finite(v0), not !is.na(): an infinite base put every later year
+        # at (x / Inf)^(1/n) - 1 = -1, an annualised -100% for a country whose
+        # series had only started with a division by zero.
+        ifelse(n > 0 & is.finite(v0) & v0 > 0 & !is.na(.data[[val_name]]) &
+                 .data[[val_name]] >= 0,
                (.data[[val_name]] / v0)^(1 / n) - 1, NA_real_)
       }
     )
+    inf_base <- sort(unique(unit_label(out[out$.wdj_inf_base %in% TRUE, ,
+                                           drop = FALSE])))
+    zero_base <- sort(unique(unit_label(out[out$.wdj_zero_base %in% TRUE, ,
+                                            drop = FALSE])))
+    out$.wdj_inf_base <- NULL
+    out$.wdj_zero_base <- NULL
+    out
   }
-  dplyr::ungroup(out)
+  out <- wdj_return_frame(na_where_no_year(out, new_col))
+  if (type == "cagr") {
+    warn_cagr_negative(out, val_name, new_col, skip = c(inf_base, zero_base))
+  }
+  if (n_inf) {
+    wdj_warn(c(
+      "{n_inf} row{?s} follow{?s/} an infinite {.field {val_name}}, so
+       {.field {new_col}} is {.val {NA}} there.",
+      "i" = "Nothing finite has a ratio to an infinity; it would read as a
+             growth of -100%."
+    ), class = "countryatlas_infinite_base")
+  }
+  if (length(inf_base)) {
+    wdj_warn(c(
+      "{length(inf_base)} countr{?y/ies} start{?s/} from an infinite
+       {.field {val_name}}, so {.field {new_col}} is {.val {NA}} for
+       {cli::qty(length(inf_base))}{?it/them}:",
+      "*" = "{.val {utils::head(inf_base, 8)}}",
+      "i" = "A compound rate needs a finite base; an infinity is usually a
+             division by zero upstream."
+    ), class = "countryatlas_infinite_base")
+  }
+  # A zero base is the same NA for the whole country, and it was the one
+  # unusable base that said nothing (a negative one is reported with the
+  # negative rows, an infinite one above) -- or, when it was every country's,
+  # was blamed on the series being too short.
+  if (length(zero_base)) {
+    wdj_warn(c(
+      "{length(zero_base)} countr{?y/ies} start{?s/} from a zero
+       {.field {val_name}}, so {.field {new_col}} is {.val {NA}} for
+       {cli::qty(length(zero_base))}{?it/them}:",
+      "*" = "{.val {utils::head(zero_base, 8)}}",
+      "i" = "A compound rate needs a positive base year."
+    ), class = "countryatlas_zero_base")
+  }
+  if (n_zero) {
+    wdj_warn(c(
+      "{n_zero} row{?s} follow{?s/} a zero {.field {val_name}}, so
+       {.field {new_col}} is {.val {NA}} there.",
+      "i" = "A change from zero has no ratio; it would divide to {.val {Inf}}."
+    ), class = "countryatlas_zero_base")
+  } else if (!n_inf && !length(inf_base) && !length(zero_base)) {
+    # Only when zeros are not the reason: "needs two years for the same
+    # country" is the wrong diagnosis for a series that has them.
+    warn_all_na_result(out, val_name, new_col,
+                       "A growth rate needs two years for the same country.")
+  }
+  out
+}
+
+# A row whose year is missing cannot be placed in time, so it has no
+# neighbour to be compared with. arrange() sorts it last within its country,
+# which made it the "next year" after the latest real one: lag_by_country()
+# handed it that year's value and growth_rate() a change from it: numbers
+# for a row that has no position in the series. The rows around it were never
+# affected, since a row sorted last is nobody's predecessor.
+na_where_no_year <- function(out, new_col) {
+  gone <- is.na(out$year)
+  if (any(gone)) out[[new_col]][gone] <- NA
+  out
+}
+
+# Say when CAGR had to skip rows because a value was negative. Every
+# neighbouring measure reports this -- theil() drops non-positive values and
+# says so, gini() warns about negatives, sigma_convergence() warns when no
+# value is positive, beta_convergence() errors -- and growth_rate() itself
+# warns via warn_all_na_result() when *every* row comes back NA. Only the
+# partial case was mute, which is the case a real series actually hits: a
+# deficit, a net flow or a balance dipping below zero for a single year.
+warn_cagr_negative <- function(out, val_name, new_col, skip = character(0),
+                               call = rlang::caller_env()) {
+  v <- out[[val_name]]
+  # `skip`: countries whose base year was unusable. Their rows are NA for that
+  # reason, and reported with it; counting them here said it twice.
+  own <- !unit_label(out) %in% skip
+  n_bad <- sum(own & !is.na(v) & v < 0 & is.na(out[[new_col]]))
+  if (!n_bad) return(invisible(out))
+  # Silent when nothing resolved at all: warn_all_na_result() covers that case
+  # and says something more useful about it.
+  if (all(is.na(out[[new_col]]))) return(invisible(out))
+  wdj_warn(c(
+    "{n_bad} row{?s} had a negative {.field {val_name}}, so
+     {.field {new_col}} is {.code NA} there.",
+    "i" = "A compound annual rate needs a positive ratio at both ends.
+           {.code type = \"yoy\"} is defined for negative values."
+  ), class = "countryatlas_cagr_negative", call = call)
+  invisible(out)
 }
 
 #' Rebase a series to an index (base year = 100)
@@ -386,34 +741,104 @@ growth_rate <- function(data, value, type = c("yoy", "cagr"),
 #'
 #' @param data A panel with `iso3c` and `year`.
 #' @param value The value column (unquoted).
-#' @param base_year The year set equal to `to`.
+#' @param base_year The year set equal to `to`. A country that has no row for
+#'   this year indexes to `NA` rather than stopping the call, because the
+#'   rebasing is per country and a partial answer is still a real one. That
+#'   also means a `base_year` no row anywhere carries -- including any
+#'   non-integer value, which no year can equal -- yields an all-`NA` column
+#'   rather than an error. [deflate()], whose rebasing is global, refuses such
+#'   a year instead; check with `base_year %in% data$year` if you need that.
 #' @param to The index value the base year maps to (default `100`).
 #' @param suffix Suffix for the new column (default `"_index"`).
 #'
-#' @return `data` with an index column added.
+#' @return `data` with an index column added. The column is `NA` for any
+#'   country whose series does not cover `base_year` (see the note there). A
+#'   negative base-year value is indexed as it is, so that country's index
+#'   runs opposite to its series.
 #' @export
 #' @examples
 #' df <- data.frame(iso3c = "USA", year = 2000:2002, gdp = c(50, 55, 60))
 #' index_to(df, gdp, base_year = 2000)
+#'
+#' # A base year the data does not have gives NA, not an error:
+#' index_to(df, gdp, base_year = 1999)
 index_to <- function(data, value, base_year, to = 100, suffix = "_index") {
   val_name <- quo_arg_name(rlang::enquo(value), "value")
   check_panel_cols(data, val_name)
   check_numeric_col(data, val_name)
+  # deflate(), the sibling with the same argument, says "`base_year` is
+  # required."; omitting it here reached check_number() and gave base R's
+  # 'argument "base_year" is missing, with no default' instead. (The stricter
+  # numeric-only contract below is deliberate and stays: unlike deflate()'s
+  # global rebasing, index_to() is per-country, and its error already reports
+  # the value the caller actually supplied rather than a coerced day count.)
+  if (missing(base_year)) wdj_abort("{.arg base_year} is required.")
   check_number(base_year, "base_year")
   check_number(to, "to")
   check_string(suffix, "suffix")
+  # NOT check_numeric_col(data, "year"). This verb only *matches* on the year,
+  # it does no arithmetic with it, and `"2000" == 2000` is TRUE in R -- so a
+  # character year works here and is deliberately allowed (test-degenerate-
+  # input.R pins that, alongside the four verbs that do arithmetic and so do
+  # require a number).
+  #
+  # A Date or POSIXct year is the one shape that cannot work: `==` coerces the
+  # *number* to that class, so `as.Date("2000-01-01") == 2000` compares against
+  # 1970-01-01 + 2000 days and is FALSE for every row. Every base came back
+  # empty and the whole column came back NA, in silence. read.csv() with a
+  # date-parsing reader produces exactly this column.
+  if (inherits(data$year, c("Date", "POSIXct", "POSIXlt"))) {
+    wdj_abort(c(
+      "{.field year} is {.obj_type_friendly {data$year}}, which cannot be
+       matched against {.arg base_year}.",
+      "x" = "{.code ==} would compare it against {.val {base_year}} read as a
+             date, which is true for no row, so every value would come back
+             {.val {NA}}.",
+      "i" = "Use the calendar year itself:
+             {.code data$year <- as.integer(format(data$year, \"%Y\"))}."
+    ), class = "countryatlas_date_year")
+  }
   new_col <- paste0(val_name, suffix)
   warn_overwrite(data, new_col)
+  # A country with no usable base-year value comes back all NA. That is the
+  # documented behaviour and stays -- but say which countries, exactly as
+  # deflate() does, because an NA row is otherwise indistinguishable from a
+  # country the source had no data for at all. With a `base_year` the panel
+  # does not cover at all this names every country, which is the signal that
+  # was missing entirely.
+  missing_base <- units_without_base(data, val_name, base_year)
+  if (length(missing_base)) {
+    wdj_warn(c(
+      "{length(missing_base)} countr{?y/ies} ha{?s/ve} no usable {base_year}
+       value; {.field {new_col}} is all {.val {NA}} for
+       {cli::qty(length(missing_base))}{?it/them}:",
+      "*" = "{.val {utils::head(sort(unique(missing_base)), 8)}}",
+      "i" = "Choose a {.arg base_year} the panel covers, or drop those
+             countries first."
+    ), class = "countryatlas_no_base_year")
+  }
   out <- data %>%
-    dplyr::group_by(.data$iso3c) %>%
+    group_by_unit() %>%
     dplyr::mutate(
       "{new_col}" := {
-        base <- .data[[val_name]][.data$year == base_year][1]
-        if (length(base) == 0L || is.na(base) || base == 0) NA_real_
+        # !is.na() first: `year == base_year` is NA for a missing year, and
+        # x[c(NA, TRUE)] returns an NA element *before* the real match, so
+        # [1] picked up the NA and the whole country indexed to NA. Which
+        # happened depended on row order -- the same three rows gave
+        # 100/150/50 with the missing year last and NA/NA/NA with it first.
+        base <- .data[[val_name]][
+          !is.na(.data$year) & .data$year == base_year][1]
+        # !is.finite() rather than is.na(): it covers NA and NaN exactly as
+        # before and adds the infinite base this missed. An Inf base made
+        # every other year of that country `finite / Inf` -- a plain, entirely
+        # plausible 0 -- so a country read as having collapsed to nothing
+        # while its neighbours indexed correctly. The three unusable bases
+        # already here return NA; an infinite one is the fourth.
+        if (length(base) == 0L || !is.finite(base) || base == 0) NA_real_
         else .data[[val_name]] / base * to
       }
     )
-  dplyr::ungroup(out)
+  wdj_return_frame(out)
 }
 
 #' Pairwise correlation of indicators on the spine
@@ -444,18 +869,36 @@ correlate_indicators <- function(data, ..., method = c("pearson", "spearman"),
   # An NA gave "missing value where TRUE/FALSE needed" and a length-2 value "the
   # condition has length > 1" -- the tell-tale unchecked-scalar messages.
   check_number(min_n, "min_n", lo = 1, hi = .Machine$integer.max)
-  method <- match.arg(method)
+  method <- rlang::arg_match(method)
   data <- tibble::as_tibble(data)
   # One row per country. Gating on `group` only caught polygon frames; an sf
   # frame has no `group` column yet still repeats divided countries (Cyprus at
   # 110m), which inflated the reported `n` -- the very number this function
-  # exists to keep honest.
-  if ("iso3c" %in% names(data)) {
-    data <- dplyr::distinct(data, .data$iso3c, .keep_all = TRUE)
-  }
+  # exists to keep honest. Through the shared helper rather than a bare
+  # distinct(): that also reports a panel, which collapsed here to one arbitrary
+  # year while `n` went on looking perfectly reasonable.
+  data <- distinct_countries(data)
   sel <- rlang::enquos(...)
   if (length(sel)) {
-    vals <- dplyr::select(data, !!!sel)
+    # tidyselect raises its own vctrs_error_subscript_oob for a column that
+    # does not exist -- "Can't select columns that don't exist" -- which was the
+    # last unclassed error at this boundary: every sibling verb goes through
+    # check_cols() and says `Column "x" not found in `data``. The selection
+    # here is a full tidyselect expression (starts_with(), where(), ranges), so
+    # it cannot be pre-checked by name; catch the failure and word it the same
+    # way, keeping tidyselect's own text for anything that is not a plain
+    # missing name.
+    vals <- tryCatch(dplyr::select(data, !!!sel), error = function(e) {
+      miss <- tryCatch(as.character(e$i), error = function(z) character(0))
+      miss <- miss[!is.na(miss) & nzchar(miss)]
+      if (length(miss)) {
+        wdj_abort(
+          "Column{cli::qty(length(miss))}{?s} {.val {miss}} not found in {.arg data}.",
+          call = verb_env())
+      }
+      wdj_abort(c("Could not select the indicator columns from {.arg data}.",
+                  "x" = "{conditionMessage(e)}"), call = verb_env())
+    })
   } else {
     num <- names(data)[vapply(data, is.numeric, logical(1))]
     keep <- setdiff(num, c("year", "long", "lat", "group", "order",
@@ -464,7 +907,7 @@ correlate_indicators <- function(data, ..., method = c("pearson", "spearman"),
   }
   bad <- names(vals)[!vapply(vals, is.numeric, logical(1))]
   if (length(bad)) {
-    wdj_abort("Column{?s} {.val {bad}} {?is/are} not numeric.")
+    wdj_abort("Column{cli::qty(length(bad))}{?s} {.val {bad}} {?is/are} not numeric.")
   }
   if (ncol(vals) < 2L) {
     wdj_abort("Need at least two numeric indicator columns to correlate.")
@@ -499,7 +942,10 @@ correlate_indicators <- function(data, ..., method = c("pearson", "spearman"),
 #' @param suffix Suffix for the new column. Defaults to `"_lag"` / `"_diff"`
 #'   (with `n` appended when `n > 1`, e.g. `"_lag5"`).
 #'
-#' @return `data` with the lagged / differenced column added.
+#' @return `data` with the lagged / differenced column added. Rows come back
+#'   sorted by `iso3c` then `year`: the calculation reads each country's series
+#'   in time order, so a row-aligned vector held alongside `data` will no
+#'   longer line up.
 #' @export
 #' @examples
 #' df <- data.frame(iso3c = "USA", year = 2000:2003, gdp = c(100, 110, 121, 133))
@@ -512,12 +958,16 @@ lag_by_country <- function(data, value, n = 1, suffix = NULL) {
   n <- as.integer(n)
   if (!is.null(suffix)) check_string(suffix, "suffix")
   new_col <- paste0(val_name, suffix %||% paste0("_lag", if (n > 1L) n else ""))
+  warn_irregular_years(data, "the lag")
   warn_overwrite(data, new_col)
   out <- data %>%
-    dplyr::group_by(.data$iso3c) %>%
-    dplyr::arrange(.data$year, .by_group = TRUE) %>%
+    group_by_unit() %>%
+    dplyr::arrange(year_sort_key(.data$year), .by_group = TRUE) %>%
     dplyr::mutate("{new_col}" := dplyr::lag(.data[[val_name]], n = n))
-  dplyr::ungroup(out)
+  out <- wdj_return_frame(na_where_no_year(out, new_col))
+  warn_all_na_result(out, val_name, new_col,
+                     "A lag of {n} needs {n + 1} years for the same country.")
+  out
 }
 
 #' @rdname lag_by_country
@@ -530,14 +980,33 @@ diff_by_country <- function(data, value, n = 1, suffix = NULL) {
   n <- as.integer(n)
   if (!is.null(suffix)) check_string(suffix, "suffix")
   new_col <- paste0(val_name, suffix %||% paste0("_diff", if (n > 1L) n else ""))
+  warn_irregular_years(data, "the difference")
   warn_overwrite(data, new_col)
   out <- data %>%
-    dplyr::group_by(.data$iso3c) %>%
-    dplyr::arrange(.data$year, .by_group = TRUE) %>%
+    group_by_unit() %>%
+    dplyr::arrange(year_sort_key(.data$year), .by_group = TRUE) %>%
     dplyr::mutate(
       "{new_col}" := .data[[val_name]] - dplyr::lag(.data[[val_name]], n = n)
     )
-  dplyr::ungroup(out)
+  out <- wdj_return_frame(na_where_no_year(out, new_col))
+  warn_all_na_result(out, val_name, new_col,
+                     "A difference over {n} year{?s} needs {n + 1} years for
+                      the same country.")
+  out
+}
+
+# The units with no usable base-year value, one label per unit, for the
+# warning index_to() and deflate() give. Keyed on unit_key(), the key the
+# rebasing itself groups on, rather than on iso3c: group_by(iso3c) puts
+# every unresolved row in one NA group, so two unidentified countries were
+# reported as "1 country ... NA" while both came back all NA.
+units_without_base <- function(data, col, base_year) {
+  hit <- !is.na(data$year) & data$year == base_year &
+    is.finite(data[[col]]) & data[[col]] != 0
+  uk <- unit_key(data)
+  has <- vapply(split(hit, uk), any, logical(1))
+  miss <- names(has)[!has]
+  unit_label(data)[match(miss, uk)]
 }
 
 # Shared validation for the panel helpers.
@@ -549,7 +1018,125 @@ check_panel_cols <- function(data, val_name, call = rlang::caller_env()) {
   if (!val_name %in% names(data)) {
     wdj_abort("Column {.val {val_name}} not found in {.arg data}.", call = call)
   }
+  # This helper validates columns itself rather than calling check_cols(), so
+  # the duplicate-name guard has to be repeated here or to_ppp() and deflate()
+  # slip past it.
+  check_dup_cols(data, call = call)
+  check_panel_unique(data, call = call)
   invisible(TRUE)
+}
+
+# A repeated country-year is malformed panel data, and every verb that reads
+# neighbouring rows is wrong on it: with France's 2019 present twice,
+# lag_by_country() lagged 2020 against the duplicate rather than the real 2019,
+# and diff_by_country() and growth_rate() turned that into confident nonsense --
+# 979, and 4895% growth -- with nothing to say the input was malformed. Cheap to
+# detect, and invisible in the output. Separate from check_panel_cols() because
+# complete_years() validates its `value` argument differently but needs this.
+# `why` because the consequence differs by verb: the lag/diff/growth family
+# reads neighbouring rows, while rank_countries() and share_of_world() instead
+# aggregate across them. Naming the wrong consequence is its own small
+# dishonesty, so each caller supplies its own.
+check_panel_unique <- function(data, call = rlang::caller_env(),
+                               why = "These verbs read neighbouring rows, so a
+                                      repeat makes the lag, difference and
+                                      growth around it wrong.") {
+  # Before the keying below, which pastes columns together: a duplicated name
+  # makes every by-name reference ambiguous, and share_of_world() and
+  # rank_countries() reach this validator before they touch the frame, so
+  # dplyr's "Can't transform a data frame with duplicate names" was the first
+  # thing the caller saw.
+  check_dup_cols(data, call = call)
+  # Key on whichever columns are actually there. rank_countries() and
+  # share_of_world() take a cross-section as readily as a panel --
+  # world_snapshot$countries has no year column at all -- and reaching for
+  # data$year there warned "Unknown or uninitialised column" on every correct
+  # call. Skipping year-less frames entirely was the wrong repair: a
+  # cross-section is keyed on the country alone, so iso3c twice is exactly the
+  # repeat this check exists to catch. What must not happen is keying a panel
+  # on iso3c alone -- paste(iso3c, NULL) collapses to that, which would have
+  # called two years of one country a repeat.
+  if (!"iso3c" %in% names(data)) return(invisible(NULL))
+  panel <- "year" %in% names(data)
+  # unit_key(), not iso3c: the verbs that call this group by the unit key, so
+  # uniqueness has to be judged on the same key. Keying on iso3c reported two
+  # *different* blank-coded rows in one year as a duplicated country-year.
+  # Unidentifiable rows get a key of their own, so they can never collide --
+  # which is right, because nothing says they are the same country.
+  uk <- unit_key(data)
+  ok <- if (panel) !is.na(data$year) else rep(TRUE, length(uk))
+  key <- (if (panel) paste(uk, data$year) else uk)[ok]
+  dupes <- unique(key[duplicated(key)])
+  if (length(dupes)) {
+    wdj_warn(c(
+      if (panel) {
+        "{.arg data} has {length(dupes)} repeated country-year{?s}:"
+      } else {
+        "{.arg data} has {length(dupes)} repeated countr{?y/ies}:"
+      },
+      "*" = "{.val {utils::head(dupes, 8)}}",
+      "i" = why
+    ), call = call)
+  }
+  invisible(NULL)
+}
+
+# NA is already handled by scale() itself; an infinity is not, and it poisons
+# the mean and the SD for the whole vector. NA rather than NaN, and per group,
+# so `within = ` still scores the groups that are fine.
+zscore_finite <- function(x) {
+  if (any(is.infinite(x))) return(rep(NA_real_, length(x)))
+  as.numeric(scale(x))
+}
+
+# The sibling of check_panel_unique(): that one catches "the same year twice",
+# this one catches "the years are not one apart". Both make a row-based lag
+# mean something other than what the column name says. On a panel of 2000,
+# 2002, 2005, growth_rate(type = "yoy") reported 27.3% for 2005 -- the change
+# since 2002, three years earlier, in a column the docs call year-on-year and
+# the argument calls "yoy". The number is right for the rows it read; the label
+# is what misleads. Warn rather than change the arithmetic: a quinquennial
+# panel is a legitimate design, and silently switching to a year-keyed lag
+# would alter results for everyone already relying on the row-based one.
+warn_irregular_years <- function(data, what, call = rlang::caller_env()) {
+  if (!all(c("iso3c", "year") %in% names(data))) return(invisible(NULL))
+  # year_sort_key(), not as.numeric(): as.numeric() on a FACTOR year returns
+  # level indices, so this read gaps between level positions and would report a
+  # perfectly regular annual panel as irregular.
+  yr <- suppressWarnings(as.numeric(year_sort_key(data$year)))
+  # unit_key() for the same reason as check_panel_unique() above: keying on
+  # iso3c called four single-year unidentified rows one country and reported
+  # the gaps between them, though the verb groups them as four units with no
+  # gaps at all.
+  uk <- unit_key(data)
+  ok <- !is.na(yr)
+  if (sum(ok) < 2L) return(invisible(NULL))
+  iso <- uk[ok]
+  yr <- yr[ok]
+  o <- order(iso, yr)
+  iso <- iso[o]; yr <- yr[o]
+  # Within a country only: the first row of each country has no predecessor.
+  step <- diff(yr)
+  same <- iso[-1] == iso[-length(iso)]
+  # step > 1, not step != 1: after sorting, a step of 0 is a repeated
+  # country-year, not a gap, and check_panel_unique() already reports it by
+  # name. Testing for != 1 made every duplicate warn twice, once accurately
+  # and once claiming a gap that is not there.
+  bad <- same & step > 1
+  if (!any(bad)) return(invisible(NULL))
+  who <- unique(iso[-1][bad])
+  wdj_warn(c(
+    "{length(who)} countr{?y/ies} ha{?s/ve} gaps in {.field year}, so {what}
+     spans more than one year there:",
+    "*" = "{.val {utils::head(who, 8)}}",
+    "i" = "Each value is compared with the previous row, not the previous year.
+           {.fn complete_years} inserts the missing years."
+    # Classed so a caller who means to hand this verb a decadal or five-yearly
+    # panel can suppress exactly this warning, as with the other conditions a
+    # legitimate input can raise, rather than muffling every countryatlas
+    # warning to silence it.
+  ), call = call, class = "countryatlas_irregular_years")
+  invisible(NULL)
 }
 
 #' Beta convergence (growth regression)
@@ -564,8 +1151,15 @@ check_panel_cols <- function(data, val_name, call = rlang::caller_env()) {
 #' @param value The value column (unquoted); must be positive (log scale).
 #'
 #' @return A one-row tibble: `beta`, `se`, `t_value`, `p_value`, `r_squared`,
-#'   `n` (countries), `speed` (annual convergence rate, `NA` when `beta >= 0`)
-#'   and `half_life` (years). The fitted [lm] object is attached as the
+#'   `n` (countries), `speed` (annual convergence rate) and `half_life`
+#'   (years).
+#'
+#'   `speed` and `half_life` are `NA` in two cases: when `beta >= 0`, because
+#'   there is no convergence to put a rate on; and when the panel's per-country
+#'   spans are too heterogeneous for any single span to reconcile with the
+#'   fitted slope, which is warned about. `beta` and its inference are
+#'   unaffected in both -- only the annualised figures need one common span, so
+#'   restrict the panel to a shared window if you need them. The fitted [stats::lm()] object is attached as the
 #'   `"model"` attribute.
 #' @export
 #' @seealso [sigma_convergence()] for the dispersion-over-time counterpart.
@@ -584,10 +1178,26 @@ beta_convergence <- function(data, value) {
   check_panel_cols(data, val_name)
   check_numeric_col(data, val_name)
 
+  # A character year -- what read.csv() hands back for "2000" -- reached the
+  # span arithmetic below as a string and died with base R's "non-numeric
+  # argument to binary operator". complete_years() already states the
+  # package's position on this shape; use the same guard so the message is the
+  # same wherever a year has to be a number rather than a label.
+  check_numeric_col(data, "year")
+  # is.finite(), not !is.na(): Inf passes both the NA test and `> 0`, so an
+  # infinite value survived into log() and lm() died with base R's "NA/NaN/Inf
+  # in 'x'" -- an unclassed error naming nothing. gini() and theil() already
+  # treat an infinity as unusable; this filter is where that belongs here,
+  # alongside the NA and non-positive values it already drops.
+  # !is.na(year) too: a row with no year sorts last, so it became the
+  # country's "final" observation, y1 came out NA, and the `y1 > y0` filter
+  # below then dropped the whole country: two perfectly good observations
+  # lost to one stray row, and `n` quietly one smaller.
   per_country <- data %>%
-    dplyr::filter(!is.na(.data[[val_name]]), .data[[val_name]] > 0) %>%
-    dplyr::group_by(.data$iso3c) %>%
-    dplyr::arrange(.data$year, .by_group = TRUE) %>%
+    dplyr::filter(is.finite(.data[[val_name]]), .data[[val_name]] > 0,
+                  !is.na(.data$year)) %>%
+    group_by_unit() %>%
+    dplyr::arrange(year_sort_key(.data$year), .by_group = TRUE) %>%
     dplyr::summarise(
       y0 = dplyr::first(.data$year),
       y1 = dplyr::last(.data$year),
@@ -607,7 +1217,13 @@ beta_convergence <- function(data, value) {
     (per_country$y1 - per_country$y0)
   log_v0 <- log(per_country$v0)
   fit <- stats::lm(growth ~ log_v0)
-  co <- summary(fit)$coefficients
+  # One summary(), reused below: it was computed twice, and it is the call that
+  # emits base R's "essentially perfect fit: summary may be unreliable" -- a
+  # warning that named neither this verb nor the reason, and which reached the
+  # caller verbatim from a panel whose growth is an exact linear function of
+  # its initial level. Say it in the package's own voice after the fit.
+  fit_summary <- lm_summary(fit)
+  co <- fit_summary$coefficients
   # With no spread in the initial levels the predictor is constant, so lm()
   # returns an NA coefficient and summary() drops the row entirely -- which
   # surfaced as a bare "subscript out of bounds" from the lookup below.
@@ -619,11 +1235,43 @@ beta_convergence <- function(data, value) {
     ))
   }
   beta <- co["log_v0", "Estimate"]
+  if (lm_perfect_fit(fit_summary)) {
+    wdj_warn(c(
+      "The regression fits {.field {val_name}} exactly, with no residual
+       variance left over.",
+      "x" = "{.field se}, {.field t_value} and {.field p_value} are computed
+             from that zero variance, so they mean nothing here.",
+      "i" = "{.field beta} is still the fitted slope. A real panel does not do
+             this -- it happens when growth is constant across countries, or
+             when the column was built from a formula rather than measured."
+    ), class = "countryatlas_perfect_fit")
+  }
   span <- mean(per_country$y1 - per_country$y0)
-  # Implied annual convergence speed: beta = -(1 - exp(-lambda * T)) / T.
+  # Implied annual convergence speed: beta = -(1 - exp(-lambda * T)) / T,
+  # which inverts to lambda = -log(1 + beta * T) / T and so needs
+  # 1 + beta * T > 0. That holds automatically when every country spans the
+  # same T. It need not hold on an unbalanced panel: beta is fitted on growth
+  # already annualised per country, so a mix of spans leaves the mean span
+  # irreconcilable with the fitted slope, and log() of a negative is not a
+  # speed. The guard was right; the silence was not. A panel with unmistakable
+  # convergence -- beta -0.04, p ~ 1e-13, R2 0.96 -- handed back NA for the two
+  # most interpretable columns while the documentation said NA meant
+  # beta >= 0, which it plainly was not.
   speed <- if (beta < 0 && (1 + beta * span) > 0) {
     -log(1 + beta * span) / span
   } else {
+    if (beta < 0) {
+      spans <- per_country$y1 - per_country$y0
+      wdj_warn(c(
+        "Cannot convert {.field beta} into an annual {.field speed}.",
+        "x" = "The countries span {min(spans)} to {max(spans)} years, and no
+               single span reconciles with the fitted slope.",
+        "i" = "{.field beta}, its {.field p_value} and {.field r_squared} are
+               unaffected -- only the annualised {.field speed} and
+               {.field half_life} need one span. Restrict the panel to a
+               common window for those."
+      ), class = "countryatlas_no_speed")
+    }
     NA_real_
   }
   out <- tibble::tibble(
@@ -631,7 +1279,7 @@ beta_convergence <- function(data, value) {
     se = co["log_v0", "Std. Error"],
     t_value = co["log_v0", "t value"],
     p_value = co["log_v0", "Pr(>|t|)"],
-    r_squared = summary(fit)$r.squared,
+    r_squared = fit_summary$r.squared,
     n = nrow(per_country),
     speed = speed,
     half_life = if (is.na(speed)) NA_real_ else log(2) / speed
@@ -665,12 +1313,31 @@ beta_convergence <- function(data, value) {
 #' )
 #' sigma_convergence(df, gdp)
 sigma_convergence <- function(data, value, measure = c("sd_log", "cv")) {
-  measure <- match.arg(measure)
+  measure <- rlang::arg_match(measure)
   val_name <- quo_arg_name(rlang::enquo(value), "value")
   check_panel_cols(data, val_name)
   check_numeric_col(data, val_name)
-  data %>%
-    dplyr::filter(!is.na(.data[[val_name]]), .data[[val_name]] > 0) %>%
+  # The positive-value filter is documented (`n` counts what survived), but two
+  # of its outcomes were not: an all-non-positive column came back as a 0-row
+  # tibble, and a year with one country got sigma = NA from sd() -- both in
+  # silence, so an empty or blank convergence series looked like a result.
+  # is.finite(), not !is.na(): Inf satisfies both the NA test and `> 0`, so an
+  # infinity survived into sd(log(x)) and that year's sigma came back NaN in
+  # silence, next to perfectly good years. Same hole beta_convergence() had.
+  # A row with no year has no year to be dispersed in: grouped as-is, it came
+  # back as a `year = NA` row of its own, a phantom period in the series.
+  keep <- data %>%
+    dplyr::filter(is.finite(.data[[val_name]]), .data[[val_name]] > 0,
+                  !is.na(.data$year))
+  if (!nrow(keep)) {
+    wdj_warn(c(
+      "No positive {.field {val_name}} values, so there is no dispersion to
+       measure.",
+      "i" = "Sigma-convergence is computed on positive values only. Returning
+             an empty result."
+    ), class = "countryatlas_no_positive")
+  }
+  out <- keep %>%
     dplyr::group_by(.data$year) %>%
     dplyr::summarise(
       n = dplyr::n(),
@@ -681,7 +1348,17 @@ sigma_convergence <- function(data, value, measure = c("sd_log", "cv")) {
       },
       .groups = "drop"
     ) %>%
-    dplyr::arrange(.data$year)
+    dplyr::arrange(year_sort_key(.data$year))
+  thin <- out$year[out$n < 2L]
+  if (length(thin)) {
+    wdj_warn(c(
+      "{length(thin)} year{?s} ha{?s/ve} fewer than two countries with a
+       positive value, so {.field sigma} is undefined there.",
+      "*" = "{.val {utils::head(thin, 8)}}",
+      "i" = "Dispersion needs at least two values to compare."
+    ), class = "countryatlas_thin_year")
+  }
+  out
 }
 
 #' Gini coefficient (population-weightable)
@@ -721,6 +1398,18 @@ gini <- function(x, weights = NULL, na.rm = TRUE) {
     ok <- !is.na(x) & !is.na(w)
     x <- x[ok]; w <- w[ok]
   }
+  # Deliberately silent, both cases. The other undefined-index paths in this
+  # file warn (zero weights, an all-zero total, infinities, negatives) because
+  # each is data that *looks* usable and is not. These two are different:
+  #
+  #  - `na.rm = FALSE` returning NA when NA is present is the argument doing
+  #    exactly what it documents, so warning would make a correct call speak;
+  #  - an empty input has no other possible answer, and the caller can see the
+  #    input was empty. world_table() and complete_years() already return
+  #    early for a zero-row frame without a word, and that is the contract.
+  #
+  # A pre-release review proposed warning here for consistency with the other
+  # paths; it does not survive the silence policy. Do not re-add it.
   if (length(x) == 0L || anyNA(x) || anyNA(w)) return(NA_real_)
   if (any(w < 0)) wdj_abort("{.arg weights} must be non-negative.")
   # Inf survives na.rm (it is not NA) and then poisons the mean, so the answer
@@ -734,8 +1423,25 @@ gini <- function(x, weights = NULL, na.rm = TRUE) {
   }
   if (any(x < 0)) { wdj_warn("{.arg x} has negative values; Gini needs x >= 0. Returning {.code NA}."); return(NA_real_) }
   sw <- sum(w)
+  # The comment above says the convention is "NA plus a word about why (as for
+  # zero weights)" -- but this line returned NA in silence for both cases, so
+  # zero weights and an all-zero column came back indistinguishable from a
+  # missing input. Say which it was. mu is computed after the sw check because
+  # sum(w * x) / 0 is NaN, not an error.
+  if (sw == 0) {
+    wdj_warn(c("{.arg weights} sum to zero, so Gini is undefined.",
+               "i" = "Returning {.code NA}."),
+             class = "countryatlas_undefined_index")
+    return(NA_real_)
+  }
   mu <- sum(w * x) / sw
-  if (sw == 0 || mu <= 0) return(NA_real_)
+  if (mu <= 0) {
+    wdj_warn(c("Every value is zero, so Gini is undefined.",
+               "i" = "Gini measures how unequally a positive total is shared;
+                      there is no total. Returning {.code NA}."),
+             class = "countryatlas_undefined_index")
+    return(NA_real_)
+  }
   # Weighted mean absolute difference, sum_{i,j} w_i w_j |x_i - x_j|, computed
   # from the sorted cumulative sums. The direct pairwise form this replaces
   # built an n-by-n matrix via outer(): fine for the ~200 countries gini() is
@@ -783,10 +1489,10 @@ gini <- function(x, weights = NULL, na.rm = TRUE) {
 #'   component's `share` of the total (`NA` when the total is `0`, i.e.
 #'   perfect equality, and the shares are undefined).
 #'
-#'   When there is nothing to compute -- no values left after `na.rm`, a zero
-#'   total weight, or an infinity in `x` or `weights` -- the result is a single
-#'   `NA` whatever `groups` says, so reach for the components only after checking
-#'   `is.data.frame()`.
+#'   When there is nothing to compute (no values left after `na.rm`, a zero
+#'   total weight, an infinity in `x` or `weights`, or, with `na.rm = FALSE`, a
+#'   missing value or group), the result is a single `NA` whatever `groups`
+#'   says, so reach for the components only after checking `is.data.frame()`.
 #' @export
 #' @seealso [gini()] for the more familiar single-number summary, which does not
 #'   decompose.
@@ -821,22 +1527,62 @@ theil <- function(x, weights = NULL, groups = NULL, na.rm = TRUE) {
   }
   bad <- x <= 0
   if (any(bad, na.rm = TRUE)) {
-    wdj_warn("Dropping {sum(bad)} non-positive value{?s} (Theil needs x > 0).")
-    x <- x[!bad]; w <- w[!bad]; g <- g[!bad]
+    # sum(bad, na.rm = TRUE): `bad` is NA wherever x is, so under
+    # na.rm = FALSE with both an NA and a non-positive value present the count
+    # was NA -- the message read "Dropping NA non-positive values" and cli was
+    # asked to pluralise on NA. Subsetting with `!bad` keeps NA rows out either
+    # way, and the NA is reported by the anyNA() return below.
+    wdj_warn("Dropping {sum(bad, na.rm = TRUE)} non-positive value{?s} (Theil needs x > 0).")
+    x <- x[!bad & !is.na(bad)]; w <- w[!bad & !is.na(bad)]; g <- g[!bad & !is.na(bad)]
   }
-  if (length(x) == 0L || anyNA(x) || anyNA(w)) return(NA_real_)
+  # Deliberately silent, both cases. The other undefined-index paths in this
+  # file warn (zero weights, an all-zero total, infinities, negatives) because
+  # each is data that *looks* usable and is not. These two are different:
+  #
+  #  - `na.rm = FALSE` returning NA when NA is present is the argument doing
+  #    exactly what it documents, so warning would make a correct call speak;
+  #  - an empty input has no other possible answer, and the caller can see the
+  #    input was empty. world_table() and complete_years() already return
+  #    early for a zero-row frame without a word, and that is the contract.
+  #
+  # A pre-release review proposed warning here for consistency with the other
+  # paths; it does not survive the silence policy. Do not re-add it.
+  #
+  # A missing *group* is the same case. na.rm = TRUE drops those rows; with
+  # na.rm = FALSE they stayed in `total` while split() below left them out of
+  # both components, so total no longer equalled between + within: the
+  # exact decomposition this function exists for, silently broken (the
+  # shares summed to 0.49 on a four-row example).
+  if (length(x) == 0L || anyNA(x) || anyNA(w) || (!is.null(g) && anyNA(g))) {
+    return(NA_real_)
+  }
   if (any(w < 0)) wdj_abort("{.arg weights} must be non-negative.")
   sw <- sum(w)
   # All-zero weights leave every share 0/0; NA is the honest answer (gini()
   # guards the same way).
-  if (sw == 0) return(NA_real_)
+  if (sw == 0) {
+    wdj_warn(c("{.arg weights} sum to zero, so Theil is undefined.",
+               "i" = "Returning {.code NA}."),
+             class = "countryatlas_undefined_index")
+    return(NA_real_)
+  }
   mu <- sum(w * x) / sw
   theil_t <- function(x, w, sw, mu) sum((w / sw) * (x / mu) * log(x / mu))
   total <- theil_t(x, w, sw, mu)
   if (is.null(g)) return(total)
 
   parts <- lapply(split(seq_along(x), g), function(i) {
-    swg <- sum(w[i]); mug <- sum(w[i] * x[i]) / swg
+    swg <- sum(w[i])
+    # A group whose weights sum to zero has no share of the population, so its
+    # contribution to both components is exactly zero -- and its observations
+    # already contribute nothing to `total`, so the decomposition identity
+    # stays exact. The sw == 0 guard above does not cover this: there the whole
+    # index is undefined, here only one group is empty and the answer is well
+    # defined. Without this, mug was 0/0 = NaN and poisoned `between` AND
+    # `within`, so a perfectly good `total` came back beside two NaNs, with no
+    # warning to say which group did it.
+    if (swg == 0) return(tibble::tibble(between = 0, within = 0))
+    mug <- sum(w[i] * x[i]) / swg
     tibble::tibble(
       between = (swg / sw) * (mug / mu) * log(mug / mu),
       within = (swg / sw) * (mug / mu) * theil_t(x[i], w[i], swg, mug)
@@ -866,7 +1612,9 @@ theil <- function(x, weights = NULL, groups = NULL, na.rm = TRUE) {
 #' @param value The value column (unquoted).
 #' @param suffix Suffix for the new column (default `"_share"`).
 #'
-#' @return `data` with a share column added (a proportion in `[0, 1]`).
+#' @return `data` with a share column added: a proportion in `[0, 1]` when no
+#'   value is negative. Negative values are the caller's business and are
+#'   summed as they are, so their shares fall outside that range.
 #' @export
 #' @examples
 #' df <- data.frame(iso3c = c("USA", "CHN"), co2 = c(5, 10))
@@ -878,6 +1626,12 @@ share_of_world <- function(data, value, suffix = "_share") {
   }
   check_numeric_col(data, val_name)
   check_string(suffix, "suffix")
+  # A repeated country-year is counted twice in the total, so the shares stop
+  # describing the world once: a frame with USA-2020 duplicated gave USA the
+  # two shares 0.1 and 0.7 against a denominator that included it twice.
+  check_panel_unique(data,
+    why = "A repeated country-year is counted twice in the total, so the shares
+           do not describe the world once.")
   new_col <- paste0(val_name, suffix)
   warn_overwrite(data, new_col)
   # On a grouped frame with no `year`, the sum() below is per group, so a "share
@@ -900,5 +1654,47 @@ share_of_world <- function(data, value, suffix = "_share") {
     out,
     "{new_col}" := { .wdj_tot <- sum(.data[[val_name]], na.rm = TRUE); if (!is.finite(.wdj_tot) || .wdj_tot == 0) NA_real_ else .data[[val_name]] / .wdj_tot }
   )
-  dplyr::ungroup(tibble::as_tibble(out))
+  out <- wdj_return_frame(dplyr::ungroup(out))
+  # A row with no year has no year's total to be a share of. group_by(year)
+  # made the undated rows a phantom year of their own, so two of them came
+  # back as 0.5 and 0.5, each other's share of a world that is only them.
+  if (has_year) out <- na_where_no_year(out, new_col)
+  # The guard in the mutate above is right -- a zero or non-finite total would
+  # divide to NaN or Inf -- but it was the silent one of the three. per_capita()
+  # and to_ppp() both report an unusable denominator, under the same two
+  # condition classes; this returned a column of NA and said nothing, which
+  # reads as "these countries have no share" rather than "there was no total to
+  # take a share of". A value that is present while its share is NA can only
+  # mean the total was unusable, so that identifies the rows exactly.
+  bad <- is.na(out[[new_col]]) & !is.na(out[[val_name]]) &
+    (if (has_year) !is.na(out$year) else TRUE)
+  if (any(bad)) {
+    if (all(bad)) {
+      wdj_warn(c(
+        "No usable {.field {val_name}} total, so no share could be computed.",
+        "i" = "A total must be finite and non-zero; {.field {new_col}} is
+               {.val {NA}} throughout."
+      ), class = "countryatlas_no_rates")
+    } else if (has_year) {
+      yrs <- unique(out$year[bad])
+      wdj_warn(c(
+        "No usable {.field {val_name}} total for {length(yrs)} year{?s}.",
+        "*" = "{.val {yrs}}",
+        "i" = "A total must be finite and non-zero; {.field {new_col}} is
+               {.val {NA}} for {sum(bad)} row{?s}."
+      ), class = "countryatlas_unusable_rows")
+    } else {
+      # Gated on has_year: with no year column `out$year` is NULL, so the
+      # branch above counted NULL and reported "for 0 years" followed by an
+      # empty bullet -- and tibble warned "Unknown or uninitialised column".
+      # A cross-section reaches this whenever the total is unusable and some
+      # value is NA.
+      wdj_warn(c(
+        "No usable {.field {val_name}} total for {sum(bad)} row{?s}.",
+        "i" = "A total must be finite and non-zero; {.field {new_col}} is
+               {.val {NA}} there."
+      ), class = "countryatlas_unusable_rows")
+    }
+  }
+  out
 }

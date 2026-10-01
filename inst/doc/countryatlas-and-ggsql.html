@@ -343,20 +343,23 @@ code > span.er { color: #a61717; background-color: #e3d2d2; }
 
 <p><a href="https://ggsql.org">ggsql</a> is a grammar of graphics for
 SQL: you describe a plot <em>inside a SQL query</em> and it renders in
-the database (DuckDB), returning a web-ready Vega-Lite widget — no
+the database (DuckDB), returning a web-ready Vega-Lite widget, with no
 ggplot2 or <code>sf</code> runtime required. The spatial layer this
 vignette targets (<code>DRAW spatial</code>, which reads WKB geometry)
-arrived in the ggsql <em>engine</em> at 0.4.0. As of August 2026 the
-ggsql R package is still at 0.3.3, so the bridge below is
-forward-looking: <code>world_query()</code> builds the query today, and
-the chunks that would execute one are shown but not evaluated.</p>
+arrived in the ggsql <em>engine</em> at 0.4.0, and
+<code>countryatlas</code> requires the ggsql <strong>R package</strong>
+at &gt;= 0.4.1, the first release that exposes it – which is the version
+[interactive_map()] checks for. At the time of writing the R package is
+still at 0.3.3, so the bridge below is forward-looking:
+<code>world_query()</code> builds the query today, and the chunks that
+would execute one are shown but not evaluated.</p>
 <p>countryatlas and ggsql fit together cleanly:</p>
 <ul>
 <li><strong>countryatlas</strong> does the part ggsql’s static bundled
-world can’t — reconcile messy country names to the ISO spine, repair the
+world can’t: reconcile messy country names to the ISO spine, repair the
 entities map backends get wrong (<code>country_overrides()</code>), and
 join World Bank indicators onto geometry.</li>
-<li><strong>ggsql</strong> does the part countryatlas doesn’t — push the
+<li><strong>ggsql</strong> does the part countryatlas doesn’t: push the
 rendering down into the database and emit Vega-Lite, so the geometry
 never has to come back into R.</li>
 </ul>
@@ -364,9 +367,8 @@ never has to come back into R.</li>
 <em>renderer</em>.</p>
 <div id="emit-a-query-no-dependencies" class="section level2">
 <h2>Emit a query (no dependencies)</h2>
-<p><code>world_query()</code> is a pure string builder — it needs
-nothing installed — so you can see exactly what will be sent to
-ggsql:</p>
+<p><code>world_query()</code> is a pure string builder (it needs nothing
+installed), so you can see exactly what will be sent to ggsql:</p>
 <div class="sourceCode" id="cb1"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb1-1"><a href="#cb1-1" tabindex="-1"></a><span class="fu">world_query</span>(</span>
 <span id="cb1-2"><a href="#cb1-2" tabindex="-1"></a>  gdp_per_capita,</span>
 <span id="cb1-3"><a href="#cb1-3" tabindex="-1"></a>  <span class="at">projection =</span> <span class="st">&quot;equal_earth&quot;</span>,</span>
@@ -425,8 +427,8 @@ referencing the registered table by name:</p>
 <h2>Why bother?</h2>
 <p>The win is the same as ggsql’s everywhere else: only the rendered
 result leaves the database. For a single world map that is minor, but
-the moment your country panel lives in a warehouse — millions of rows,
-many years — pushing the aggregation and rendering down to where the
+the moment your country panel lives in a warehouse (millions of rows,
+many years), pushing the aggregation and rendering down to where the
 data already is, rather than pulling it into R, is the whole point.
 countryatlas makes sure what you push down is keyed on an honest,
 reconciled ISO spine.</p>

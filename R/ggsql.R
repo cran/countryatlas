@@ -14,6 +14,9 @@ ggsql_wkb_frame <- function(data, geometry_col = "geometry") {
   # columns must be vectors"). Strip the class: the payload is already a list
   # of raw vectors, which is what nanoarrow encodes as binary and DBI writes
   # as a BLOB.
+  # Say so before clobbering, as the eleven other column-adding verbs do: a
+  # frame that already had a column of this name lost it in silence.
+  warn_overwrite(df, geometry_col)
   df[[geometry_col]] <- unclass(sf::st_as_binary(geom, EWKB = FALSE))
   tibble::as_tibble(df)
 }
@@ -38,6 +41,12 @@ ggsql_wkb_frame <- function(data, geometry_col = "geometry") {
 #'   `"log10"`).
 #' @param title Optional plot title (`LABEL title => ...`).
 #' @param draw The spatial layer (default `"spatial"`).
+#' @param layer `"choropleth"` (default), `"bubble"` (proportional symbols --
+#'   needs `size`) or `"binned"` (classed fill -- see `n_bins`).
+#' @param facet Optional column to facet the query by, e.g. `"year"` for a
+#'   small-multiple panel rendered in the database.
+#' @param size Column driving symbol size for `layer = "bubble"`.
+#' @param n_bins Number of classes for `layer = "binned"` (default `5`).
 #'
 #' @return A `ggsql_query` string (prints as the formatted query).
 #' @section Executing the query:
@@ -55,18 +64,90 @@ ggsql_wkb_frame <- function(data, geometry_col = "geometry") {
 #'             title = "GDP per capita")
 world_query <- function(fill, source = "countryatlas_world",
                         projection = "equal_earth", palette = "viridis",
-                        transform = NULL, title = NULL, draw = "spatial") {
+                        transform = NULL, title = NULL, draw = "spatial",
+                        layer = c("choropleth", "bubble", "binned"),
+                        facet = NULL, size = NULL, n_bins = NULL) {
   fill_name <- quo_arg_name(rlang::enquo(fill), "fill")
+  layer <- rlang::arg_match(layer)
   check_string(source, "source")
   check_string(draw, "draw")
+  # Guarded before the is.null() tests below, which force the promise.
+  facet_expr <- substitute(facet)
+  facet <- tryCatch(force(facet), error = function(e) {
+    abort_bare_column(facet_expr, "facet", e)
+  })
+  size_expr <- substitute(size)
+  size <- tryCatch(force(size), error = function(e) {
+    abort_bare_column(size_expr, "size", e)
+  })
+  if (!is.null(facet)) check_string(facet, "facet")
+  if (!is.null(size)) check_string(size, "size")
+  if (!is.null(n_bins)) {
+    # hi: the value is coerced with as.integer() below, which returns NA past
+    # 2^31-1 with a bare "NAs introduced by coercion" -- the query then read
+    # "BIN fill INTO NA". compute_breaks() has carried this bound all along.
+    check_number(n_bins, "n_bins", lo = 2, hi = .Machine$integer.max)
+  }
+  # `size` belongs to "bubble" and `n_bins` to "binned", and the other layers
+  # took them without a word: n_bins was simply dropped (only the binned layer
+  # emits a BIN clause), while size still went into the VISUALISE list as
+  # `pop AS size` on a choropleth, which has no size channel to put it on. The
+  # emission is left alone -- it is what a pass-through query builder does, and
+  # what ggsql makes of it is ggsql's business -- but the silence is not, since
+  # the neighbouring abort already treats layer/argument mismatches as worth
+  # naming.
+  # `[[` on a named vector throws for a name that is not there, so "choropleth"
+  # -- which uses neither argument -- has to be handled explicitly.
+  layer_arg <- c(bubble = "size", binned = "n_bins")
+  used <- if (layer %in% names(layer_arg)) layer_arg[[layer]] else character(0)
+  inert <- setdiff(
+    c(if (!is.null(size)) "size", if (!is.null(n_bins)) "n_bins"), used
+  )
+  if (length(inert)) {
+    wdj_warn(c(
+      "{.code layer = \"{layer}\"} does not use
+       {cli::qty(length(inert))}{?this argument/these arguments}: {.arg {inert}}.",
+      "i" = '{.arg size} applies to {.code layer = "bubble"} and {.arg n_bins}
+             to {.code layer = "binned"}.'
+    ), class = "countryatlas_layer_args_ignored")
+  }
+  if (identical(layer, "bubble") && is.null(size)) {
+    wdj_abort(c(
+      '{.code layer = "bubble"} needs a {.arg size} column.',
+      "i" = "A proportional-symbol map has nothing to size the symbols by
+             otherwise."
+    ))
+  }
+  if (identical(layer, "binned") && is.null(n_bins)) n_bins <- 5
   if (!is.null(projection)) check_string(projection, "projection")
   if (!is.null(palette)) check_string(palette, "palette")
   if (!is.null(transform)) check_string(transform, "transform")
   if (!is.null(title)) check_string(title, "title", allow_empty = TRUE)
+  # Only `title` was escaped, and it is the one value that lands inside quotes.
+  # Everything else is interpolated as a bare SQL *identifier* or keyword, so a
+  # column name with a space produced invalid SQL with no diagnostic
+  # ("VISUALISE my col AS fill"), and a value derived from untrusted input --
+  # a column picked from a web form, a source name out of a config file --
+  # went into a string that is then handed to ggsql::ggsql_execute() to run.
+  # Validate the shape here, where the mistake is: an unquoted SQL identifier
+  # is a letter or underscore followed by letters, digits or underscores.
+  check_sql_ident(fill_name, "fill")
+  check_sql_ident(source, "source")
+  if (!is.null(size)) check_sql_ident(size, "size")
+  if (!is.null(facet)) check_sql_ident(facet, "facet")
+  if (!is.null(projection)) check_sql_ident(projection, "projection")
+  if (!is.null(palette)) check_sql_ident(palette, "palette")
+  if (!is.null(transform)) check_sql_ident(transform, "transform")
+  head_line <- sprintf("VISUALISE %s AS fill", fill_name)
+  if (!is.null(size)) {
+    head_line <- paste0(head_line, ", ", size, " AS size")
+  }
   lines <- c(
-    sprintf("VISUALISE %s AS fill", fill_name),
+    head_line,
     sprintf("FROM %s", source),
-    sprintf("DRAW %s", draw)
+    # "bubble" draws symbols rather than filled shapes; the spatial layer name
+    # is the one thing that changes, so the rest of the query is untouched.
+    sprintf("DRAW %s", if (identical(layer, "bubble")) "spatial_point" else draw)
   )
   if (!is.null(projection)) {
     lines <- c(lines, sprintf("PROJECT TO %s", projection))
@@ -76,10 +157,38 @@ world_query <- function(fill, source = "countryatlas_world",
     if (!is.null(transform)) scale_line <- paste0(scale_line, " VIA ", transform)
     lines <- c(lines, scale_line)
   }
+  if (identical(layer, "binned")) {
+    lines <- c(lines, sprintf("BIN fill INTO %d", as.integer(n_bins)))
+  }
+  if (!is.null(facet)) {
+    lines <- c(lines, sprintf("FACET BY %s", facet))
+  }
   if (!is.null(title)) {
     lines <- c(lines, sprintf("LABEL title => '%s'", gsub("'", "''", title)))
   }
   structure(paste(lines, collapse = "\n"), class = c("ggsql_query", "character"))
+}
+
+# Refuse anything that is not a bare SQL identifier. This builder emits a
+# query as text, so every interpolated name is unquoted SQL: a space, a quote,
+# a semicolon or a comment marker either breaks the query silently or changes
+# what it does. Names that need quoting are legal in SQL but not supported
+# here, and saying so is better than emitting something that fails inside
+# ggsql or, worse, runs.
+check_sql_ident <- function(x, arg, call = rlang::caller_env()) {
+  check_string(x, arg, call = call)
+  if (!grepl("^[A-Za-z_][A-Za-z0-9_]*$", x)) {
+    wdj_abort(c(
+      "{.arg {arg}} must be a plain SQL identifier.",
+      "x" = "Got {.val {x}}.",
+      "i" = "Letters, digits and underscores only, starting with a letter or
+             underscore. This builder emits the name unquoted, so anything
+             else would change the query rather than name a column.",
+      "i" = "Rename the column first -- {.code dplyr::rename()} -- or build
+             the query yourself."
+    ), class = "countryatlas_bad_sql_ident", call = call)
+  }
+  invisible(x)
 }
 
 #' @export
@@ -139,6 +248,17 @@ wdj_duckdb <- function() {
 #'
 #' @return Depending on `format`: a DuckDB connection (with the table written),
 #'   a Parquet file path, or a nanoarrow array stream.
+#'
+#'   **You own the connection** that `format = "duckdb"` returns, and duckdb
+#'   keeps its in-memory database alive until the handle is released, so close
+#'   it when you are done:
+#'   ```r
+#'   src <- as_ggsql_source(d, format = "duckdb")
+#'   on.exit(DBI::dbDisconnect(src, shutdown = TRUE))
+#'   ```
+#'   `format = "parquet"` needs no such care: it closes the connection it
+#'   opened before returning the path. Passing your own `con` leaves it open
+#'   in every case, since it was never ours to close.
 #' @export
 #' @examples
 #' \dontrun{
@@ -149,10 +269,29 @@ wdj_duckdb <- function() {
 as_ggsql_source <- function(data, name = "countryatlas_world",
                             format = c("duckdb", "parquet", "arrow"),
                             con = NULL, path = NULL, geometry_col = "geometry") {
-  format <- match.arg(format)
+  format <- rlang::arg_match(format)
   check_string(name, "name")
+  # Same bare-column guard as the verbs in analysis.R: this argument takes a
+  # column name as a string, and writing it unquoted -- as the tidy-eval verbs
+  # next door allow -- otherwise reached the user as base R's "object not
+  # found", naming neither the argument nor the string it wanted.
+  geometry_col_expr <- substitute(geometry_col)
+  geometry_col <- tryCatch(force(geometry_col), error = function(e) {
+    abort_bare_column(geometry_col_expr, "geometry_col", e)
+  })
   check_string(geometry_col, "geometry_col")
   if (!is.null(path)) check_string(path, "path")
+  # `data` is documented as a map-ready frame, and nothing checked it:
+  # as_ggsql_source(1:5) wrote an integer vector out as a table and handed back
+  # a connection, so a "world source" could contain no countries at all.
+  if (!is.data.frame(data)) {
+    wdj_abort(c(
+      "{.arg data} must be a data frame.",
+      "x" = "Got {.cls {class(data)[1]}}.",
+      "i" = "Pass a map-ready frame -- ideally {.pkg sf}, so
+             {.code DRAW spatial} has geometry to work with."
+    ))
+  }
   df <- ggsql_wkb_frame(data, geometry_col)
 
   if (format == "arrow") {
@@ -161,8 +300,39 @@ as_ggsql_source <- function(data, name = "countryatlas_world",
   }
 
   need_pkg(c("DBI", "duckdb"), sprintf("for as_ggsql_source(format = \"%s\")", format))
+  # A connection the caller already closed reached dbWriteTable() as base R's
+  # bare "Invalid connection", naming neither the argument nor the state it was
+  # in. Checked here rather than left to the write, for the same reason the
+  # own_con bookkeeping below exists: this is the one place that knows whose
+  # connection it is.
+  if (!is.null(con)) {
+    if (!inherits(con, "DBIConnection")) {
+      wdj_abort(c(
+        "{.arg con} must be a {.cls DBIConnection}.",
+        "x" = "Got {.cls {class(con)[1]}}.",
+        "i" = "Leave it {.code NULL} for a fresh in-memory DuckDB."
+      ))
+    }
+    if (!isTRUE(DBI::dbIsValid(con))) {
+      wdj_abort(c(
+        "{.arg con} is closed.",
+        "i" = "Open a new connection, or leave it {.code NULL} for a fresh
+               in-memory DuckDB."
+      ))
+    }
+  }
   own_con <- is.null(con)
   con <- con %||% DBI::dbConnect(wdj_duckdb())
+  if (own_con) {
+    # If the write throws, the caller never receives the handle and so cannot
+    # close it, while duckdb holds the in-memory database open. Release a
+    # connection we opened ourselves; one passed in was never ours to close.
+    written <- FALSE
+    on.exit(
+      if (!written) try(DBI::dbDisconnect(con, shutdown = TRUE), silent = TRUE),
+      add = TRUE
+    )
+  }
   DBI::dbWriteTable(con, name, as.data.frame(df), overwrite = TRUE)
 
   if (format == "parquet") {
@@ -173,8 +343,14 @@ as_ggsql_source <- function(data, name = "countryatlas_world",
       "COPY %s TO %s (FORMAT PARQUET)",
       DBI::dbQuoteIdentifier(con, name), DBI::dbQuoteString(con, path)
     ))
-    if (own_con) DBI::dbDisconnect(con, shutdown = TRUE)
+    # Not marked `written` on this branch, so the on.exit() above closes a
+    # connection we opened whether the COPY succeeds or fails. It used to be
+    # marked straight after the table write, which disarmed that handler, and
+    # the disconnect below the COPY was then the only one, so a path that
+    # could not be written left the in-memory database open with no handle
+    # the caller could close.
     return(invisible(path))
   }
+  if (own_con) written <- TRUE
   invisible(con)
 }

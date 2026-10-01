@@ -5,6 +5,7 @@
 snap <- countryatlas::world_snapshot$countries
 
 test_that("plotting verbs name a missing column instead of leaking a ggplot2 error", {
+  skip_slow_on_cran()
   skip_if_not_installed("maps")
   mapdf <- attach_geometry(snap, geometry = "polygon")
   expect_error(world_map(mapdf, not_a_column), class = "countryatlas_error")
@@ -29,8 +30,7 @@ test_that("morans_i names a missing value column", {
   # a NULL column subset produces, so the real cause was hidden. need_pkg()
   # fires before the column check, so sf has to be present for this to be the
   # error we see.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   expect_error(morans_i(snap, not_a_column, n_perm = 0), "not found in")
 })
 
@@ -42,6 +42,7 @@ test_that("audit_coverage rejects an indicator column that isn't there", {
 })
 
 test_that("a multi-element na_label warns but does not error the legend", {
+  skip_slow_on_cran()
   # There is one NA key, so discrete_na_labels() takes the first element -- that
   # tolerance is deliberate (a length-1 NA means "leave the default formatter
   # alone", and a length > 1 value must not reach a length-1 condition). It used
@@ -80,7 +81,10 @@ test_that("per_capita survives an all-NA year column", {
                      .wdj_pop = c(331e6, 1402e6))
     }
   )
-  out2 <- per_capita(df[, c("iso3c", "year", "co2")], co2)
+  # The stub returns NA years, so nothing joins and the population is unusable
+  # -- which per_capita() now reports rather than handing back a blank column.
+  expect_warning(out2 <- per_capita(df[, c("iso3c", "year", "co2")], co2),
+                 class = "countryatlas_no_rates")
   expect_true(all(is.finite(seen)))
   expect_true("co2_per_capita" %in% names(out2))
 })
@@ -100,8 +104,14 @@ test_that("per_capita aborts cleanly on a partial population fetch", {
 test_that("theil returns NA rather than NaN when all weights are zero", {
   # is.na() is TRUE for NaN as well, so it cannot tell the fixed NA from the
   # NaN the bug produced -- assert the exact value.
-  expect_identical(theil(c(1, 2, 3), weights = c(0, 0, 0)), NA_real_)
-  expect_identical(gini(c(1, 2, 3), weights = c(0, 0, 0)), NA_real_)
+  # And both now say which degenerate case it was, rather than returning a
+  # bare NA indistinguishable from a missing input.
+  expect_warning(t0 <- theil(c(1, 2, 3), weights = c(0, 0, 0)),
+                 class = "countryatlas_undefined_index")
+  expect_identical(t0, NA_real_)
+  expect_warning(g0 <- gini(c(1, 2, 3), weights = c(0, 0, 0)),
+                 class = "countryatlas_undefined_index")
+  expect_identical(g0, NA_real_)
 })
 
 test_that(".Rbuildignore excludes the session-local .claude directory", {
@@ -112,6 +122,7 @@ test_that(".Rbuildignore excludes the session-local .claude directory", {
 })
 
 test_that('style = "categorical" names the offending numeric column', {
+  skip_slow_on_cran()
   skip_if_not_installed("maps")
   mapdf <- attach_geometry(snap, geometry = "polygon")
   # ggplot2 used to raise "Continuous value supplied to a discrete scale" at
@@ -131,9 +142,8 @@ test_that('style = "categorical" names the offending numeric column', {
 })
 
 test_that("bivariate_map does not leak biscale's missing-values warning", {
-  skip_if_not_installed("sf")
+  skip_if_no_sf_geometry()
   skip_if_not_installed("biscale")
-  skip_if_not_installed("rnaturalearth")
   sfd <- attach_geometry(snap, geometry = "sf")
   expect_true(anyNA(sfd$gdp_per_capita) || anyNA(sfd$life_expectancy))
   expect_no_warning(bivariate_map(sfd, gdp_per_capita, life_expectancy))
@@ -232,8 +242,7 @@ test_that("the ggsql engine states the version it needs", {
   # end. The gate must name the version, not just the package.
   skip_if(requireNamespace("ggsql", quietly = TRUE) &&
             utils::packageVersion("ggsql") >= "0.4.1")
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   # Must be an *sf* frame: the sf check now runs ahead of the package gates, so a
   # country-level frame is (correctly) rejected for its shape before ggsql is
   # ever consulted.
@@ -287,11 +296,11 @@ test_that("quietly_sf swallows console output but returns the value", {
 })
 
 test_that("the sf happy path prints nothing to the console", {
+  skip_slow_on_cran()
   # st_break_antimeridian() runs on every sf call and emits three notices
   # ("Spherical geometry (s2) switched off/on", plus st_intersection's planar
   # note). Unsilenced, a plain attach_geometry(geometry = "sf") printed them.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   skip_if(sink.number(type = "message") != 2L,
           "a message sink is already active")
   snap <- countryatlas::world_snapshot$countries
@@ -316,13 +325,13 @@ test_that("the sf happy path prints nothing to the console", {
 })
 
 test_that("the sf happy path leaks no message conditions to the caller", {
+  skip_slow_on_cran()
   # A clean console is not enough: redirecting the message *stream* leaves the
   # underlying message() conditions travelling to whatever handler the caller
   # has installed, so purrr::quietly(), capture_messages() or a plain
   # withCallingHandlers() around any sf-backed verb still saw sf's internal
   # chatter. Count conditions, not console lines -- they are separate channels.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   snap <- countryatlas::world_snapshot$countries
 
   n_conditions <- function(expr) {
@@ -351,6 +360,15 @@ test_that("the network-backed examples degrade instead of failing offline", {
   testthat::local_mocked_bindings(
     fetch_one_indicator = function(...) stop("Could not resolve host")
   )
+  # Into a cache directory of its own, and empty. Otherwise a successful fetch
+  # left on disk by an earlier test -- or by a developer's own session -- is
+  # served from the cache, the mock is never called, and the test silently
+  # asserts nothing. It passed in isolation and failed in combination, which is
+  # the tell.
+  withr::local_options(list(
+    countryatlas.cache_dir = file.path(tempfile("degrade-cache"), "c")))
+  clear_wdi_cache()
+  withr::defer(clear_wdi_cache())
   expect_warning(cd <- country_data(2020, c(co2 = "EN.GHG.CO2.MT.CE.AR5")),
                  class = "countryatlas_warning")
   expect_s3_class(cd, "tbl_df")
@@ -364,6 +382,7 @@ test_that("the network-backed examples degrade instead of failing offline", {
 })
 
 test_that("no runnable example calls per_capita without an explicit pop", {
+  skip_slow_on_cran()
   # That path deliberately errors when the World Bank is unreachable, so it must
   # not appear in an example that R CMD check executes.
   skip_if_not(dir.exists("../../man"), "man/ not present (installed package)")
@@ -390,6 +409,7 @@ test_that("no runnable example calls per_capita without an explicit pop", {
 # were absent.
 
 test_that("interactive_map's ggiraph engine honours tooltip", {
+  skip_slow_on_cran()
   skip_if_not_installed("maps")
   skip_if_not_installed("ggiraph")
   snap <- countryatlas::world_snapshot$countries
@@ -406,36 +426,50 @@ test_that("interactive_map's ggiraph engine honours tooltip", {
 })
 
 test_that("interactive_map's leaflet engine honours tooltip", {
+  skip_slow_on_cran()
   skip_if_not_installed("maps")
   skip_if_not_installed("leaflet")
   skip_if_no_sf_geometry()
   snap <- countryatlas::world_snapshot$countries
   seen <- NULL
-  # The label is an unevaluated formula, so read the column name out of the
-  # environment it carries rather than deparsing it.
+  # The labels are computed values now, not `~` formulas. That was the point of
+  # the change: leaflet evaluates a formula against the data as an environment,
+  # so `~ pal(get(fill_name))` found a *column* named `pal` before the palette
+  # function, and `~ paste0(iso3c, ...)` read iso3c with nothing checking for
+  # it. Asserting the rendered strings is also a better test than reading a
+  # column name out of a formula's environment -- it checks what the user sees.
   testthat::local_mocked_bindings(
     addPolygons = function(map, ..., label = NULL) {
-      seen <<- get("tooltip_name", envir = environment(label))
+      seen <<- label
       map
     },
     .package = "leaflet"
   )
   invisible(interactive_map(snap, gdp_per_capita, engine = "leaflet"))
-  expect_equal(seen, "gdp_per_capita")
+  expect_type(seen, "character")
+  expect_gt(length(seen), 100L)
+  # "<iso3c>: <value>", with the fill column as the default tooltip.
+  fra <- grep("^FRA: ", seen, value = TRUE)
+  expect_length(fra, 1L)
+  gdp <- snap$gdp_per_capita[match("FRA", snap$iso3c)]
+  expect_equal(fra, paste0("FRA: ", gdp))
+
   invisible(interactive_map(snap, gdp_per_capita, tooltip = country,
                             engine = "leaflet"))
-  expect_equal(seen, "country")
+  fra2 <- grep("^FRA: ", seen, value = TRUE)
+  expect_length(fra2, 1L)
+  expect_equal(fra2, "FRA: France")
 })
 
 test_that("country_borders' column order is what the graph recipe assumes", {
+  skip_slow_on_cran()
   # ?country_borders tells users to hand igraph only the two code columns,
   # because graph_from_data_frame() treats the FIRST TWO columns as the edge
   # endpoints -- and here columns 1 and 2 both describe endpoint A, so passing
   # the whole tibble builds edges from each country's code to its own name.
   # igraph is not a dependency, so assert the structural fact the advice rests
   # on rather than running it.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   b <- country_borders(region = "Europe")
   expect_equal(names(b), c("iso3c_a", "country_a", "iso3c_b", "country_b"))
   # Columns 1 and 2 are the same endpoint, not two endpoints.
@@ -453,11 +487,11 @@ test_that("country_borders' column order is what the graph recipe assumes", {
 })
 
 test_that('scale = "large" names the non-CRAN package it needs', {
+  skip_slow_on_cran()
   # The 10m Natural Earth data lives in rnaturalearthhires, which is not on
   # CRAN and not in Suggests. Ungated, rnaturalearth reacts by trying to
   # install it into the user's library and then failing obscurely.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   skip_if(requireNamespace("rnaturalearthhires", quietly = TRUE),
           "rnaturalearthhires is installed, so the gate does not fire")
   expect_error(world_geometry("countries", geometry = "sf", scale = "large"),
@@ -517,9 +551,7 @@ test_that("classInt and the base fallback agree on quantile breaks", {
 # na_matches = "never"; every other country-keyed join now does too.
 
 test_that("an NA country key never joins to geometry", {
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
-  skip_if_not_installed("rnaturalearthdata")
+  skip_if_no_sf_geometry()
   geom <- world_geometry("countries", geometry = "sf")
   # The premise of the bug: the sf source really does carry a keyless feature.
   skip_if(!anyNA(geom$iso3c), "sf source has no keyless feature to mis-join to")
@@ -534,8 +566,8 @@ test_that("an NA country key never joins to geometry", {
 })
 
 test_that("an NA country key never borrows a centroid", {
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_slow_on_cran()
+  skip_if_no_sf_geometry()
   d <- data.frame(iso3c = c("USA", NA), population = c(10, 99))
   b <- ggplot2::ggplot_build(bubble_map(d, population, backend = "sf"))
   pts <- b$data[[length(b$data)]]
@@ -597,16 +629,37 @@ test_that("EPSG codes and Natural Earth scales are integer literals", {
   expect_identical(countryatlas:::ne_scale("small"), 110L)
   expect_identical(countryatlas:::ne_scale("medium"), 50L)
   expect_identical(countryatlas:::ne_scale("large"), 10L)
-  src <- vapply(list(countryatlas:::get_world_sf, countryatlas::locate_country,
-                     countryatlas::interactive_map),
-                function(f) paste(deparse(f), collapse = " "), character(1))
-  expect_false(any(grepl("4326[^L]", src)))
+  # Walk the AST rather than grepping the deparsed source. The regex form also
+  # matched "4326" inside *string* literals -- locate_country()'s guard tells the
+  # user to call sf::st_as_sf(..., crs = 4326), which is the right advice and
+  # never becomes a number -- while an AST walk tests the thing that actually
+  # matters: every numeric 4326 constant in the code is an integer.
+  epsg_doubles <- function(f) {
+    bad <- 0L
+    walk <- function(e) {
+      if (is.numeric(e) && length(e) == 1L && !is.na(e) && e == 4326 &&
+          !is.integer(e)) {
+        bad <<- bad + 1L
+      }
+      if (is.call(e) || is.expression(e)) {
+        for (part in as.list(e)) {
+          if (!missing(part) && !is.null(part)) try(walk(part), silent = TRUE)
+        }
+      }
+      invisible(NULL)
+    }
+    walk(body(f))
+    bad
+  }
+  fns <- list(countryatlas:::get_world_sf, countryatlas::locate_country,
+              countryatlas::interactive_map, countryatlas::projection_compare,
+              countryatlas::tissot_map)
+  expect_equal(sum(vapply(fns, epsg_doubles, integer(1))), 0L)
 })
 
 test_that("the sf paths survive hostile formatting options", {
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
-  skip_if_not_installed("rnaturalearthdata")
+  skip_slow_on_cran()
+  skip_if_no_sf_geometry()
   snap <- countryatlas::world_snapshot$countries
   for (opt in list(list(OutDec = ","), list(scipen = -9),
                    list(OutDec = ",", scipen = -9))) {
@@ -641,6 +694,7 @@ test_that("with_c_numbers restores the caller's options", {
 })
 
 test_that("every option the package reads is documented on the package page", {
+  skip_slow_on_cran()
   # Two of the three were advertised only in NEWS.md -- a changelog, not
   # reference documentation -- so a reader of ?countryatlas had no way to find
   # them. wdj_workers()'s own comment even said "the option is advertised in
@@ -693,14 +747,14 @@ test_that("options(countryatlas.workers) is validated", {
 })
 
 test_that("no verb leaves the caller's global state modified", {
+  skip_slow_on_cran()
   # CRAN policy: a package must not change the user's options, working directory
   # or other global settings. The sf backend genuinely has to toggle
   # sf::sf_use_s2() (Natural Earth rings are invalid as spherical geometry) and
   # with_c_numbers() has to normalise OutDec/scipen for two upstream bugs, so
   # each is paired with an on.exit() restore -- which a later edit could drop
   # without any other test noticing. Error paths matter as much as happy ones.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   snap <- countryatlas::world_snapshot$countries
   sfd <- attach_geometry(snap, geometry = "sf")
 
@@ -733,11 +787,11 @@ test_that("no verb leaves the caller's global state modified", {
 })
 
 test_that("morans_i touches the RNG only when it permutes", {
+  skip_slow_on_cran()
   # Consuming random numbers is correct for a permutation test -- what would be
   # wrong is calling set.seed() (the package never does) or spending randomness
   # when none was asked for. n_perm = 0 is the deterministic path.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   sfd <- attach_geometry(countryatlas::world_snapshot$countries, geometry = "sf")
 
   set.seed(1)
@@ -754,16 +808,27 @@ test_that("morans_i touches the RNG only when it permutes", {
   set.seed(42); a <- morans_i(sfd, gdp_per_capita, n_perm = 99)
   set.seed(42); b <- morans_i(sfd, gdp_per_capita, n_perm = 99)
   expect_identical(a$p_value, b$p_value)
+
+  # The *statistic* must not depend on the permutations -- only the p-value
+  # may. If a refactor ever let the seed move `i`, every published figure from
+  # this package would be irreproducible and nothing else here would notice.
+  set.seed(1); i1 <- morans_i(sfd, gdp_per_capita, n_perm = 99)$i
+  set.seed(2); i2 <- morans_i(sfd, gdp_per_capita, n_perm = 99)$i
+  expect_identical(i1, i2)
+  # A permutation p-value is (1 + #{perm >= observed}) / (n_perm + 1), so it can
+  # never be exactly zero. Reporting p = 0 from 99 draws would be a real claim.
+  expect_gt(a$p_value, 0)
+  expect_lte(a$p_value, 1)
 })
 
 test_that("a correct call to any verb is completely silent", {
+  skip_slow_on_cran()
   # Six warning sites went in during the pre-CRAN work (warn_overwrite, the
   # share_of_world grouping note, flow_map's dropped flows, na_label, the
   # latest/panel conflict, the ggrepel fallback). None of them may fire on a
   # correct call: users run with options(warn = 2) in CI, where a stray warning
   # becomes an error.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   skip_if_not_installed("maps")
   snap <- countryatlas::world_snapshot$countries
   sfd <- attach_geometry(snap, geometry = "sf")
@@ -777,7 +842,11 @@ test_that("a correct call to any verb is completely silent", {
   expect_silent(force(world_map(poly, gdp_per_capita, style = "quantile")))
   expect_silent(force(bubble_map(sfd, population, backend = "sf")))
   expect_silent(force(spike_map(poly, population)))
-  expect_silent(force(tile_map(snap, gdp_per_capita)))
+  # Restrict to countries the bundled grid can place: tile_map() reports the
+  # ones it cannot (as gridded_cartogram() does), so passing the whole snapshot
+  # would be testing that warning rather than the absence of stray ones.
+  expect_silent(force(tile_map(
+    snap[snap$iso3c %in% countryatlas::world_tiles$iso3c, ], gdp_per_capita)))
   expect_silent(force(per_capita(snap, gdp_per_capita, pop = population)))
   expect_silent(force(share_of_world(snap, population)))
   expect_silent(force(rank_countries(snap, gdp_per_capita)))
@@ -799,13 +868,40 @@ test_that("a correct call to any verb is completely silent", {
   expect_silent(force(standardize_country(tibble::tibble(c = "France"), "c")))
 })
 
+test_that("the 3.0.0 verbs are silent on a correct call too", {
+  skip_slow_on_cran()
+  # Same contract as the block above, extended to the verbs that gained warning
+  # sites in this release -- the panel guards, the unstandardised-key guards and
+  # the coverage reports. Every one of them must stay quiet on ordinary input,
+  # or `options(warn = 2)` turns a working script into a failing one.
+  skip_if_no_sf_geometry()
+  skip_if_not_installed("maps")
+  snap <- countryatlas::world_snapshot$countries
+  sfd <- attach_geometry(snap, geometry = "sf")
+  poly <- attach_geometry(snap, geometry = "polygon")
+
+  expect_silent(force(world_table(snap, gdp_per_capita, engine = "tibble")))
+  expect_silent(force(audit_coverage(snap)))
+  expect_silent(force(rate_check(snap, population, gdp_per_capita)))
+  expect_silent(force(coverage_map(sfd, gdp_per_capita)))
+  expect_silent(force(value_by_alpha_map(sfd, gdp_per_capita, population)))
+  expect_silent(force(classify_compare(poly, gdp_per_capita)))
+  expect_silent(force(distance_between("France", "Germany")))
+  expect_silent(force(simplify_geometry(sfd, keep = 0.1)))
+  expect_silent(force(country_join(tibble::tibble(a = "France", x = 1),
+                                   tibble::tibble(b = "France", y = 2), a, b)))
+  expect_silent(force(country_sources()))
+  expect_silent(force(projection_info()))
+  expect_silent(force(country_timeline("France")))
+})
+
 test_that("the verbs survive hostile number-formatting options", {
+  skip_slow_on_cran()
   # A comma decimal mark is ordinary in much of the world, and fmt_num() exists
   # so a PROJ string never depends on it. (A *negative* scipen is not covered:
   # it breaks sf and ggplot2 on their own -- st_crs(paste0("EPSG:", 4326))
   # becomes "EPSG:4.326e+03" -- with this package not even loaded.)
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   snap <- countryatlas::world_snapshot$countries
   sfd <- attach_geometry(snap, geometry = "sf")
   with_opts <- function(o, code) {
@@ -838,6 +934,7 @@ test_that("the verbs survive hostile number-formatting options", {
 })
 
 test_that("globalVariables() declares nothing it does not need", {
+  skip_slow_on_cran()
   # The list had grown to 29 names; emptying it and reading what R CMD check
   # reported showed only 7 were load-bearing. The rest were covered by the
   # `.data$x` idiom, which needs no declaration. A stale entry silences the "no
@@ -884,6 +981,7 @@ test_that("globalVariables() declares nothing it does not need", {
 })
 
 test_that("bundled datasets are never referenced bare inside the package", {
+  skip_slow_on_cran()
   # A bare `world_tiles` resolves only while the package is *attached*: the
   # lazy-data objects live in the package environment, which is not on a
   # namespace-only lookup path. So `countryatlas::tile_map(...)` in a script with
@@ -913,4 +1011,164 @@ test_that("bundled datasets are never referenced bare inside the package", {
                        info = paste(basename(f), "refers to", d, "unqualified"))
     }
   }
+})
+
+test_that("the silence policy reaches every offline verb, not just 39 of them", {
+  skip_slow_on_cran()
+  # The two blocks above cover 39 of the 102 exports, and every warning bug
+  # found in the pre-CRAN review sat in the gap: the hatched/disputes message
+  # (world_map() was covered, but never with those two arguments), the constant
+  # `equalize` note (value_by_alpha_map() was covered -- with a *varying*
+  # population), and share_of_world()'s phantom year (covered -- with no NA and
+  # a nonzero total). Coverage of the verb is not coverage of the contract.
+  #
+  # Every verb named here is offline and deterministic. The network verbs and
+  # wdj_overrides() are deliberately absent: the first cannot run here, and the
+  # second is *meant* to speak.
+  skip_if_no_sf_geometry()
+  skip_if_not_installed("maps")
+  snap <- countryatlas::world_snapshot$countries
+  sfd <- attach_geometry(snap, geometry = "sf")
+  poly <- attach_geometry(snap, geometry = "polygon")
+  pan <- tibble::tibble(iso3c = rep(c("USA", "FRA", "CHN", "IND"), each = 3),
+                        year = rep(2000:2002, 4),
+                        v = c(1, 2, 3, 10, 20, 30, 100, 150, 200, 5, 6, 7),
+                        deaths = c(1:12), population = 1e6,
+                        ppp = 2, defl = rep(c(1, 1.02, 1.05), 4))
+  flows <- tibble::tibble(f = c("France", "Japan", "Brazil"),
+                          t = c("Japan", "Brazil", "France"), w = c(1, 2, 3))
+  cross <- snap[!is.na(snap$gdp_per_capita), ]
+  # The convergence verbs run a log-t regression, which correctly warns below
+  # 15 periods (Phillips & Sul) -- so a short panel is not a *correct* call and
+  # testing it here would be testing that warning.
+  # The noise is deliberate: a panel built from an exact formula makes the
+  # log-t and beta regressions fit perfectly, which the verbs now (rightly)
+  # report -- so the clean version would be testing that report instead.
+  iso <- c("USA", "FRA", "CHN", "IND", "BRA", "ZAF")
+  set.seed(20260909)
+  long <- tibble::tibble(
+    iso3c = rep(iso, each = 20),
+    year = rep(2000:2019, length(iso)),
+    v = as.numeric(rep(seq_len(20), length(iso))) *
+      rep(c(1, 2, 5, 10, 20, 50), each = 20))
+  long$v <- long$v * exp(stats::rnorm(nrow(long), 0, 0.05))
+
+  # -- rates and time series
+  expect_silent(force(smooth_rates(cross, population, gdp_per_capita)))
+  expect_silent(force(to_ppp(pan, v, factor = ppp)))
+  expect_silent(force(deflate(pan, v, base_year = 2000,
+                              deflator = defl)))
+  expect_silent(force(interpolate_missing(pan, "v")))
+
+  # -- spatial statistics
+  expect_silent(force(getis_ord(sfd, gdp_per_capita)))
+  expect_silent(force(gearys_c(sfd, gdp_per_capita, n_perm = 0)))
+  expect_silent(force(local_morans(sfd, gdp_per_capita, n_perm = 0)))
+  expect_silent(force(spatial_lag(sfd, gdp_per_capita)))
+  expect_silent(force(country_weights("contiguity",
+                                      countries = c("FRA", "DEU", "ITA"))))
+
+  # -- flows and networks
+  expect_silent(force(flow_matrix(flows, f, t, w)))
+  expect_silent(force(country_network(flows, f, t, w)))
+
+  # -- convergence
+  expect_silent(force(convergence_club(long, v)))
+  expect_silent(force(sigma_convergence(long, v)))
+  expect_silent(force(beta_convergence(long, v)))
+
+  # -- maps
+  expect_silent(force(facet_map(rbind(cbind(poly, year = 2000L),
+                                      cbind(poly, year = 2001L)),
+                                gdp_per_capita, facet = "year")))
+  expect_silent(force(globe_map(sfd, gdp_per_capita)))
+  expect_silent(force(lisa_map(sfd, gdp_per_capita, n_perm = 0)))
+  expect_silent(force(od_map(flows, f, t, w)))
+  expect_silent(force(projection_compare(sfd, gdp_per_capita,
+                                         projections = c("robinson", "mollweide"))))
+  expect_silent(force(projection_distortion("robinson")))
+  expect_silent(force(tissot_map("robinson")))
+  expect_silent(force(geom_country_labels()))
+
+  # -- reference and lookup
+  expect_silent(force(country_codes(c("iso3c", "continent"))))
+  expect_silent(force(country_groups("EU")))
+  expect_silent(force(in_group(c("FRA", "USA"), "EU")))
+  expect_silent(force(join_world(tibble::tibble(c = "France"), "c")))
+  expect_silent(force(country_join_all(list(
+    tibble::tibble(c = "France", x = 1),
+    tibble::tibble(c = "France", y = 2)), by = "c")))
+  expect_silent(force(repair_country_names(c("France", "Germany"))))
+  expect_silent(force(check_country_match(c("France", "Germany"))))
+  expect_silent(force(map_provenance(world_map(sfd, gdp_per_capita))))
+})
+
+test_that("world_map stays silent across the cross-product of its arguments", {
+  skip_slow_on_cran()
+  # Coverage of the verb was not coverage of the contract: the hatched/disputes
+  # message fired only when `na_style` and `disputes` were passed *together*,
+  # and world_map() was already in the silence block -- with neither.
+  skip_if_no_sf_geometry()
+  skip_if_not_installed("maps")
+  snap <- countryatlas::world_snapshot$countries
+  sfd <- attach_geometry(snap, geometry = "sf")
+  grid <- expand.grid(
+    na_style = c("grey", "hatched"),
+    disputes = c("ignore", "mark"),
+    style = c("continuous", "quantile"),
+    stringsAsFactors = FALSE
+  )
+  for (i in seq_len(nrow(grid))) {
+    lbl <- paste(grid$na_style[i], grid$disputes[i], grid$style[i])
+    # ggpattern is what draws a hatch; without it the verbs correctly *say* so,
+    # and that notice is the one thing this block must not suppress.
+    if (!requireNamespace("ggpattern", quietly = TRUE) &&
+        grid$na_style[i] == "hatched") next
+    expect_silent(force(world_map(sfd, gdp_per_capita,
+                                  na_style = grid$na_style[i],
+                                  disputes = grid$disputes[i],
+                                  style = grid$style[i])))
+  }
+  # uncertainty is a separate axis: it swaps in the VSUP scale.
+  expect_silent(force(world_map(sfd, gdp_per_capita,
+                                uncertainty = population)))
+})
+
+test_that("a zero-row frame is silent and typed, not warned about", {
+  # `ifelse(usable, x / y, NA_real_)` returns logical(0) on a 0-row input --
+  # ifelse() takes its result type from `test`, and with length 0 neither
+  # branch runs -- and `if (!any(usable))` is TRUE for logical(0), so six verbs
+  # both mistyped the column and warned "No usable population, so nothing
+  # could be put per capita." about a frame that had no rows to be usable.
+  # Neither block above had a 0-row leg.
+  snap <- countryatlas::world_snapshot$countries
+  empty <- snap[0, ]
+  pan0 <- tibble::tibble(iso3c = character(), year = integer(),
+                         v = numeric(), population = numeric(),
+                         ppp = numeric(), defl = numeric())
+
+  expect_silent(out <- per_capita(empty, gdp_per_capita, pop = population))
+  expect_equal(nrow(out), 0L)
+  expect_type(out[[ncol(out)]], "double")
+
+  expect_silent(out <- to_ppp(pan0, v, factor = ppp))
+  expect_type(out[[ncol(out)]], "double")
+
+  expect_silent(out <- smooth_rates(empty, population, gdp_per_capita))
+  expect_type(out[[ncol(out)]], "double")
+
+  expect_silent(out <- rate_check(empty, population, gdp_per_capita))
+  expect_equal(nrow(out), 0L)
+
+  # This one aborted rather than warned: nothing is `%in%` an empty vector,
+  # so the base_year guard fired and reported "Years present: Inf and -Inf"
+  # from range() of nothing.
+  expect_silent(out <- deflate(pan0, v, base_year = 2000, deflator = defl))
+  expect_type(out[[ncol(out)]], "double")
+
+  expect_silent(out <- share_of_world(empty, population))
+  expect_type(out[[ncol(out)]], "double")
+
+  expect_silent(out <- growth_rate(pan0, v))
+  expect_type(out[[ncol(out)]], "double")
 })

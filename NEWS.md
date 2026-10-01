@@ -1,3 +1,2976 @@
+# countryatlas 3.0.0
+
+The whole of the roadmap tracked in
+[#19](https://github.com/PursuitOfDataScience/countryatlas/issues/19), in one
+release. 46 new exports and two new datasets take the package from "join World
+Bank data to a map" to "join *anyone's* data, to the map as it was in 1950, and
+say honestly what the picture does and does not support".
+
+The version is 3.0.0 rather than 2.1.0 because three things change behaviour for
+existing code: `world_map(projection = "mercator")` now produces a different
+(and usable) map, `morans_i()` returns two more columns, and
+`geom_country_labels()` takes `data` as its second argument. Details under
+**Breaking changes**.
+
+## Breaking changes
+
+* **`geom_country_labels()` gains `data` as its second argument**, matching the
+  `geom_*(mapping, data, ...)` convention every other ggplot2 geom follows. A
+  call that passed `repel` positionally -- `geom_country_labels(aes(...),
+  FALSE)` -- now binds that `FALSE` to `data` and must name it. Named calls are
+  unaffected.
+* **`morans_i()` returns `n_excluded` and `excluded`.** Code that assumed a
+  five-column result will see seven. The statistic itself is unchanged.
+* **`world_map(projection = "mercator")` draws a different map** -- see the bug
+  fix below. It was previously unusable, so this is a fix rather than a
+  regression, but the output does change.
+* **`style = "binned"` draws different bins** in `world_map()`, `globe_map()`
+  and `value_by_alpha_map()`. `n_bins` was silently ignored there (see the bug
+  fix below), so the bin count and boundaries change for any existing call.
+  `style = "quantile"` and `"jenks"` are unaffected.
+* **`classification_report = TRUE` returns `NULL` for `style = "continuous"`**
+  instead of a row-per-distinct-value table, and warns. Code that read the
+  attribute after a continuous map got a table that described nothing; it now
+  gets nothing, explicitly.
+* `world_map()`'s new arguments were deliberately appended *after* `recenter`,
+  so no existing positional call to it changes meaning.
+* **`country_join()` and `country_join_all()` gain `warn`, defaulting to
+  `TRUE`.** They now warn about country names that resolve to nothing, so code
+  that joins on messy names will start emitting a warning it did not before.
+  The join result is unchanged; pass `warn = FALSE` for the old silence.
+* **`world_map(engine = "tmap")` failed opaquely on an older tmap.** The
+  engine builds its scales with `tm_scale_intervals()`,
+  `tm_scale_continuous()` and `tm_scale_categorical()` -- the tmap 4 API. tmap
+  3 configured scales through arguments on `tm_polygons()` and exports none of
+  them, and because `DESCRIPTION` pins no version on any `Suggests` package,
+  the `need_pkg("tmap")` gate was satisfied by any tmap at all. An older
+  install then died on R's own "'tm_scale_intervals' is not an exported object
+  from 'namespace:tmap'", which names neither the cause nor the cure. The
+  engine now checks for the constructors it needs and says so, pointing at
+  either an upgrade or `engine = "ggplot2"`. The check is on the capability
+  rather than a version number, as `as_ggsql_source()` already does for
+  duckdb's `shared_home`: that is the thing actually required, and it stays
+  correct whichever release introduced it.
+* **`locate_country()` measured its snap-back distance from the wrong point.**
+  A point falling just outside the coarse coastline is snapped to the nearest
+  country when it is within `tolerance_km`, and that step paired points with
+  countries using `st_nearest_points(..., by_element = TRUE)`. The argument is
+  `pairwise`; `by_element` is not a formal of it, so sf absorbed the name into
+  `...` and ignored it, returning the full *n*×*n* cross product instead of
+  *n* pairs -- after which each unmatched point was measured against a
+  different point's country. Cuba's centroid sits 10.8 km off the 110m
+  coastline and should snap; in a 17-point call it was measured against
+  American Samoa's point, came out at 10167 km, and was dropped to `NA`. One
+  unmatched point was safe, because 1x1 is the same thing as pairwise -- which
+  is why every single-point example was correct and only multi-point calls
+  were wrong. The error ran both ways: a bogus distance landing under the
+  tolerance would have attributed a point to a country it is not in. Fixed,
+  with a length check so it cannot silently regress to a cross product again.
+* **`spatial_lag()` did not say which countries its weights excluded.** A
+  country with no neighbour gets `NA`, which the documentation states -- but
+  that `NA` is indistinguishable from one caused by a missing input value, and
+  nothing in the result said which countries the weights had dropped.
+  `morans_i()` and `gearys_c()` answer this by returning `excluded`;
+  `getis_ord()` and `local_morans()` omit the row, so a `setdiff()` recovers
+  it. `spatial_lag()` returns the caller's frame, so it now attaches the codes
+  as the `"countryatlas_excluded"` attribute -- the same channel this package
+  already uses for `"countryatlas_cartogram"` and `"countryatlas_clubs"`. Not
+  a warning: on real geography some country always lacks a land neighbour, so
+  a warning would fire on every ordinary call. On a panel the attribute holds
+  the union across years, since the weights are geography rather than time.
+* **`neighbors()` could not tell a typo from an island.** An unresolved name
+  becomes `NA`, and the `%in%` filter simply never matches it, so a
+  misspelling returned no rows -- indistinguishable from a country that
+  genuinely has no land border. The function's own example makes that
+  collision explicit ("Japan has no land border"). `distance_between()` and
+  `convert_country()` take the same input and both report an unresolved value;
+  `neighbors()` now does too, and gains `warn = TRUE`. Iceland still returns
+  zero rows in silence, because that zero is real.
+* **`country_timeline()` said nothing about a name it could not resolve.** An
+  unrecognised input came back as a row of `NA`, which reads as a country with
+  no recorded history rather than a name nobody matched -- in a package whose
+  whole premise is that unmatched names are the problem worth reporting.
+  `dissolve_country()` takes the same input shape and has warned about exactly
+  this since 1.0.0. `country_timeline()` now gives the same warning, with the
+  same `check_country_match()` pointer, and gains `warn = TRUE` to match its
+  sibling. A historical name is still silent: `"USSR"` is *meant* to fail the
+  ISO lookup and be resolved by the historical spine, which is why that
+  lookup's own warning stays suppressed.
+* **Three panel verbs did nothing, silently, on a cross-section.** Handed one
+  year per country, `growth_rate()`, `lag_by_country()` and `diff_by_country()`
+  each added a column that was `NA` in every row and said nothing -- the verb
+  accomplished literally nothing, and the result read as a computation that had
+  run. They now report it (`countryatlas_all_na_result`), stating what the verb
+  needs ("a lag of 3 needs 4 years for the same country") and pointing at
+  `complete_years()`. The notice fires only when the whole column is `NA` and
+  the source column had data, so the ordinary panel case -- where just the
+  first year per country is `NA` -- stays silent.
+* **`country_network()` validated `top_n` after building the network.** It was
+  the one verb here that did its whole job and then rejected an argument it
+  could have rejected at the door. `top_n` only trims the finished edge list,
+  so the check is now made first.
+* **`share_of_world()` returned a column of `NA` without saying why.** A zero
+  or non-finite total is a dead end -- the division would give `NaN` or `Inf`
+  -- and the guard that turns it into `NA` was right. Its silence was not:
+  `per_capita()` and `to_ppp()` both report an unusable denominator, under the
+  same two condition classes, while this one returned nothing but `NA` and
+  read as "these countries have no share" rather than "there was no total to
+  take a share of". It now reports it, naming the years affected on a panel
+  (only the bad years go `NA`; the rest keep their shares).
+* **`world_map(engine = "tmap")` now projects.** It took `projection` and
+  `recenter` and drew in the frame's own CRS regardless (see the bug fix
+  below), so every existing tmap map changes: the default is Equal Earth, as
+  it already was on the ggplot2 engine. A bad projection name is now an error
+  there rather than being ignored.
+* **Five verbs now return a tibble rather than the class they were handed.**
+  `to_ppp()`, `smooth_rates()`, `interpolate_missing()`, `spatial_lag()` and
+  `rank_countries()` returned whatever arrived: a `data.frame` stayed a
+  `data.frame`, and a grouped frame stayed grouped (see the bug fixes below).
+  They now normalise, as their sibling verbs always did. Code that relied on
+  `df[, "col"]` dropping to a vector, or on an inherited grouping surviving
+  the call, changes.
+* **`complete_years()` returns an `sf` frame when given one.** It previously
+  dropped the class while leaving the geometry column in place, so a pipeline
+  that repaired the result with `st_as_sf()` is now re-wrapping something that
+  is already `sf` -- harmless, but no longer necessary.
+* **A duplicated column name is now refused.** `per_capita()` and `to_ppp()`
+  accepted a frame with two `gdp` columns and silently computed from the
+  first; ten other verbs failed with a message about internals in tibble. All
+  of them now reject it up front (see the bug fix below).
+* **`region` is applied when `geometry = "none"`.** `world_data()` and
+  `join_world()` ignored it on that branch and returned every country in the
+  world (see the bug fix below), so a call passing both now gets fewer rows --
+  the ones it asked for. A bounding box, having nothing to clip against, is
+  refused rather than silently dropped.
+* **Several backends now warn where they used to accept an argument and drop
+  it** -- `scale` and `projection` on the polygon backend, the ggplot2-only
+  arguments on the `tmap` and `mapgl` renderers, `title`/`subtitle` on
+  `world_table(engine = "tibble")`, and `...` on two of `interactive_map()`'s
+  engines. The drawings are unchanged; only the silence is. Code running under
+  `options(warn = 2)` will now stop where it previously carried on.
+* **Argument values are no longer partially matched.** Every exported function
+  that takes a fixed set of choices now validates with `rlang::arg_match()`
+  instead of `match.arg()`, so `style = "quant"` errors rather than resolving to
+  `"quantile"`. The error names the argument, the function and the valid
+  choices, and suggests the one you meant -- `match.arg()` reported only
+  `'arg' should be one of ...`, naming neither. Spelled-out values are
+  unaffected.
+
+* **`world_tiles` places 171 of its 239 countries in a different cell.** The
+  `break` in the placement scan left only its inner loop, so a country whose own
+  cell was taken was re-placed at the *last* free cell in the search square
+  rather than the first -- and every cell claimed along the way stayed marked
+  occupied for nobody. That wasted 129 of 368 cells and pushed later countries
+  further out still: mean displacement from a country's true position was 1.9
+  cells with a worst case of 7.1, against 0.9 and 2.8 now. `tile_map()`
+  layouts change accordingly. The grid is still 40x24 and still has one
+  country per cell.
+* **`dispute_policy()` returns the policy it replaced, not the one you set.**
+  R's convention for a setter -- `options()`, `par()`, `sf::sf_use_s2()` -- so
+  `on.exit(dispute_policy(dispute_policy("neutral")))` now restores the old
+  value, where before it was a no-op. Reading the current policy with no
+  argument is unchanged.
+* **`world_geometry("coastline")` and `world_geometry("ocean")` name their
+  geometry column `geometry`.** It was `x`, from `st_as_sf()` on a bare `sfc`,
+  making these the only two `what` values whose column was not called what the
+  return contract says. Code that referred to `$x` must change; code written
+  against the other four now works on all six.
+* **`gini()` and `theil()` warn instead of returning a bare `NA`** when the
+  input is empty, or when `na.rm = FALSE` and values are missing. The value is
+  unchanged; code running under `options(warn = 2)` will now stop where it
+  previously carried an unexplained `NA` forward.
+
+## Bug fixes
+
+* **`globe_map()` built globes it could not draw.** On the default `sf`
+  backend, 63 of 216 sampled viewpoints (29%) failed when the plot was
+  printed, with grid's "Invalid graphics path": a country on the horizon lost
+  its far-side vertices in the orthographic transform and kept whatever was
+  left (at lon 120, lat 20 Chad became a single point). The plot object built
+  fine, so nothing noticed until it was drawn, and a 60-frame
+  `spin_globe(backend = "sf")` could not get through one rotation. The
+  viewpoints that did draw closed every horizon country with a straight chord.
+  Geometry is now cut at the horizon on the sphere before it is projected, in
+  `globe_map()`, `world_map(projection = "orthographic")` on either engine,
+  `world_geometry()`, `projection_compare()` and `tissot_map()`, CShapes'
+  historical borders included; every sampled viewpoint draws,
+  and the colour scale and coverage are the same from every side.
+* **`world_map(na_style = "hatched")` built maps it could not draw where `sf`
+  does not load.** `ggpattern` draws the stripes through `gridpattern`, which
+  clips them with `sf` when the plot is printed. `sf` is always installed
+  alongside, but where its system libraries (udunits, GDAL, GEOS, PROJ) are
+  missing from the library path it cannot be loaded, so the map built fine and
+  then failed on print with "unable to load shared object units.so". Hatching
+  now checks that `sf` loads and otherwise falls back to grey with a message,
+  as it already did when `ggpattern` is absent.
+* **`world_map(na_style = "hatched")` took half a minute to print on the
+  polygon backend.** `ggpattern` clipped a fresh set of stripes to every
+  polygon, and the no-data countries of a world map are many polygons (169
+  for `co2_per_capita` in `world_snapshot`, most of them islands, plus
+  Antarctica). The stripes are now clipped once, to all of them together:
+  the same map, with the same stripes, prints in about a second.
+* **Countries with no data vanished from `animate_world()` and got their own
+  panel in `facet_map(facet = year)`.** `attach_geometry()` gives a country
+  the data does not cover an `NA` year, so it belonged to no frame: the
+  animation never drew it (gganimate warned twice while dropping it) and the
+  small multiples drew it in an extra panel labelled `NA`. It is now drawn,
+  as no data, in every period.
+* **`value_by_alpha_map()` and the value-suppressing palette ranked polygon
+  vertices, not countries.** The polygon backend repeats a country's values
+  down every vertex of its outline, so the default `transform = "rank"`
+  weighted each country by how complex the outlines below it are: Chile, at
+  the 69th percentile of countries by population, was drawn at the 30th, and
+  the mean opacity error across 210 countries was 0.25. `world_map(uncertainty
+  = )` ranked the same way and put 101 of 189 countries in the wrong value x
+  uncertainty cell. Both now rank one value per country, as the quantile
+  breaks always have.
+* **`attach_geometry()` let a column of the caller's replace the map
+  geometry.** A shared name keeps the caller's version, so a `group`, `lat`,
+  `long` or `order` column (a treatment group, a capital's latitude) displaced
+  the polygon backend's own, and every map drawn from the result was nonsense:
+  a two-value `group` drew the world as three polygons. That is now refused,
+  naming the column; the `sf` backend is unaffected.
+* **`historical_geometry()` gave the Soviet Union Russia's code.** Gleditsch
+  and Ward use one code for both, so the 1980 USSR came back as `iso3c =
+  "RUS"` and `attach_geometry(year = 1980)` painted all fifteen republics with
+  Russia's value, the anachronism `audit_time_coverage()` reports as
+  `"before_existence"`. A code now stays `NA` until `historical_codes` says
+  the state existed. `?historical_geometry` also said `owner` is `NA` for a
+  sovereign state (it is the state's own code) and named the Gold Coast as an
+  entity with no code (CShapes calls it Ghana and it carries `"GHA"`).
+* **A non-breaking space turned the USSR into Russia.** The historical-name
+  lookup trimmed only ASCII whitespace, so `"USSR"` pasted from a web page
+  missed its alias and fell through to countrycode, which resolves it to
+  Russia alone: `dissolve_country()` returned one row instead of fifteen,
+  `check_country_match()` did not flag it historical, and
+  `country_timeline()` answered for Russia.
+* **`lisa_map()` reported two different coverages.** Its caption counted the
+  countries it coloured while `map_provenance()` counted every country with a
+  value, including the ones the weights could not connect, which are drawn as
+  no-data: 142 against 189 on the bundled snapshot. Provenance now counts
+  what is drawn.
+* **`od_map()` dropped flows the basemap cannot draw without saying so.**
+  Hong Kong, Macao, Tuvalu, the British Virgin Islands and Gibraltar have no
+  polygon on the polygon backend, so China's largest destination simply
+  vanished from China's panel. They are now named in a warning.
+* **`convergence_club()` dropped countries without a complete series.** A
+  country with one missing year disappeared from the result altogether; it
+  now comes back as `club = NA`, the documented "not classified", with a
+  warning naming it.
+* **`smooth_rates()` let a negative count into its model.** The pooled rate
+  and excess variance went off their domain, every `_shrinkage` came back
+  above 1 (the help promises 0 to 1) and rates were pushed away from the
+  global one. A negative count is now unusable and reported. The
+  unusable-denominator warning also counted rows whose *numerator* was
+  missing; it counts denominators only. `rate_check()` reported a standard
+  error of exactly 0 for a negative rate and now gives `NA`, with a warning.
+* **`world_map(uncertainty = , n_bins = )` said `n_bins` was ignored while
+  using it**, for the value classes of the palette. The notice is gone there;
+  `n_uncertainty` without `uncertainty`, which really does nothing, now says
+  so instead.
+* **`join_world()` replaced a caller's `region`, `continent` or `iso2c`
+  column in silence**, where `standardize_country()` warns. It now warns too,
+  when a value actually changes.
+* **One unmatched name in a `region` vector was dropped in silence.**
+  `region = c("France", "Germny")` drew France alone; the name that matched
+  nothing is now reported, and a continent or group name inside a vector,
+  which `region` accepts only on its own, is explained rather than called a
+  failed match.
+* **`growth_rate()` read the row after an infinity as -100%.** Anything
+  finite over `Inf` is 0, so `type = "yoy"` gave -1 after an infinite value
+  and `type = "cagr"` gave -1 for every year of a series starting at one.
+  Both are `NA` now, with a warning.
+* **`audit_coverage()` counted an infinite value as present**, while
+  `coverage_map()`, which both help pages call the same report as a map,
+  shows it as missing. It counts as missing in both now.
+* **`world_map(engine = "tmap", style = "binned")` drew pretty breaks.** The
+  ggplot2 engine draws `n_bins` equal intervals; the tmap engine now does too.
+* **A blank `iso3c` was reported as an excluded country** by `morans_i()`,
+  `gearys_c()` and the other spatial statistics, inflating `n_excluded`.
+* **A custom weights frame naming one link twice kept only the last weight.**
+  It is now refused, with advice to sum repeated flows first.
+* **`standardize_subnational()` refused a lowercase or padded ISO 3166-2
+  code** (`"de-by"`, `"DE-BY "`), under a message promising case-insensitive
+  matching. Codes are upper-cased and trimmed first.
+* **A bad `countryatlas.cache_max_age` or `countryatlas.cache_max_size` was
+  blamed on the cache directory.** `"a"` or `NA` switched persistent caching
+  off with "Cannot write to the cache directory"; a negative value was
+  accepted. Both options are now validated when read, naming the option.
+* **`bivariate_map()` did not validate `dim`**, so `"a"`, `NA`, `c(2, 3)` or
+  `2.5` failed in base R or in biscale; a custom biscale palette also turned
+  the provenance `style` into one string per colour.
+* **`interactive_map()` crashed on a fill with nothing to scale.** The
+  leaflet engine died on "Wasn't able to determine range of domain" for an
+  all-missing numeric column, and the mapgl engine refused an all-missing
+  column and failed on a constant one or one with a single country's value
+  ("`values` and `stops` must have the same length"). Such a map now draws
+  as no-data, as the ggplot2 engines always did.
+* **`interactive_map(engine = "plotly", projection = "orthographic")` failed
+  inside plotly** ("number of columns of matrices must match"), whose
+  converter cannot take an orthographic view. It now says so and names the
+  engines that can.
+* **`country_factsheet()` misreported neighbours it had not computed.** With
+  the lookup unavailable (no `sf`), France's sheet blamed the 110m basemap for
+  "excluding" Andorra and Monaco, and Andorra's said "None found". The sheet
+  now says the neighbours were not computed, and why.
+* `?share_of_world` promised a proportion in `[0, 1]` and `?index_to` said
+  nothing about a negative base year; both now say what a negative value
+  does.
+* `compare_sources()` names a source listed twice rather than failing on
+  duplicated column names, and a non-finite `year` passed to `world_data()` or
+  `country_data()` is refused as such rather than leaking a coercion warning.
+* **`cartogram_map()` and `dorling_map()` failed in the orthographic
+  projection**, inside cartogram ("all sizes are missing and/or
+  non-positive"), because the far side's vertices were dropped rather than
+  cut at the horizon. They now draw the visible hemisphere. A contiguous
+  cartogram in Winkel Tripel also failed when printed, on a graticule the
+  theme never shows.
+* **`growth_rate(type = "cagr")` gave a country with a zero base year `NA`
+  without saying so**, and when that was every country, blamed the series for
+  being shorter than two years. It now names them.
+* **`deflate()` left a row `NA` in silence** when its year's index was zero,
+  infinite or missing, where `to_ppp()` and `per_capita()` report the same
+  thing. It now says how many rows.
+* **`compare_sources()` crashed on a year no source covers**, with base R's
+  "subscript out of bounds"; it now returns the empty comparison with a
+  warning. An infinite value made the relative difference `NaN`, which
+  `disagrees` counted as agreement; it is left out of the comparison and
+  named.
+* **`recenter = 360` or `-360` failed on the `sf` backend** with sf's
+  "polygons require at least 4 points", as did an out-of-range value such as
+  `500`, which is now refused by name before any geometry is touched.
+* **`bubble_map()` ignored `projection` on its default polygon backend
+  without saying so**, as `world_map()` already reports; it now names
+  `backend = "sf"` as the way to project.
+* **Errors named functions the caller never called.** A bare column passed
+  to one of the string-taking arguments was reported as "Error in
+  `value[[3L]]()`" (a `tryCatch()` handler), a missing column in
+  `country_join_all()` as "Error in `FUN()`", and a bad `origin`, weights
+  matrix, `scale`, `region`, `footnote` or override table under an internal
+  helper's name such as `wdj_to_iso3c()` or `weights_custom()`. Each now names
+  the verb. A bad global option is reported without a call.
+* **The on-disk cache could delete files it had not written.** With
+  `options(countryatlas.cache_dir = )` pointed at a folder that held anything
+  else, the first cached fetch deleted every file in it without an `.rds`
+  extension (a sweep meant for entries left by 2.0.x), cachem's 30-day expiry
+  and size cap applied to every `.rds` file there, and
+  `clear_wdi_cache(disk = TRUE)` removed the folder and everything below it.
+  Entries now carry their own `.countryatlas` extension, pruning and clearing
+  touch only files the cache wrote, and the folder itself is removed only when
+  that leaves it empty.
+* **`local_morans()` did not permute conditionally, as it documents.** It
+  shuffled all *n* values with one permutation shared by every country, so a
+  country's own value could land among its neighbours. For the extreme values a
+  hot-spot map is about, that inflated the pseudo p-value: Monaco came out at
+  0.028 where the conditional reference distribution (and spdep's
+  `localmoran_perm()`) gives 0.0035. Each country's neighbours are now drawn
+  from the other *n* - 1 values.
+* **`convergence_club()` depended on row order.** `pivot_wider()` lays its
+  columns out in order of first appearance and the log-t test reads them by
+  position, so a shuffled panel, or one whose first country lacked the first
+  year, formed different clubs from the same data. The years are sorted first.
+* **`smooth_rates()` shrank every year of a panel toward the earliest year's
+  global rate**, under a warning that said the other years were dropped though
+  every row came back. The empirical-Bayes prior is now estimated per year,
+  the design `spatial_lag()` already uses for a panel.
+* **`bubble_map()` drew a negative total as a bubble of its absolute value**
+  (France at -1.4e9 as large as China) and an infinite one as an infinite
+  bubble. `bubble_map()` and `spike_map()` now set negative and infinite values
+  aside with a warning and count them as missing; `spike_map()` used to drop
+  them and blame a missing centroid. A missing size on the polygon backend no
+  longer leaks ggplot2's "Removed 1 row" at print time.
+* **An infinite fill was counted as shown.** Every fill scale draws `Inf` as no
+  data, but the `footnote = "auto"` caption, `map_provenance()` and
+  `coverage_map()` counted it as present: "189 of 240 countries shown" over a
+  map showing 187. It now counts as missing everywhere, `na_style = "omit"` and
+  `"hatched"` treat it as the no-data it is drawn as, and the map verbs name
+  the countries holding one. `interactive_map(engine = "leaflet")` no longer
+  fails on one with leaflet's "Wasn't able to determine range of domain".
+* **`flow_map()` with a missing or infinite weight** leaked "Removed 50 rows",
+  or failed at print time with grid's "'lwd' must be non-negative and finite".
+  Those flows are dropped with a warning, as `flow_matrix()` drops them.
+  `cartogram_map()` and `dorling_map()` likewise name an infinite weight
+  instead of handing it to cartogram.
+* **`growth_rate(type = "yoy")` returned `Inf` and `NaN` after a zero**, where
+  every sibling verb gives `NA` for a zero denominator. It now gives `NA`, with
+  a warning.
+* **A row with a missing `year` was treated as the latest year.**
+  `lag_by_country()`, `diff_by_country()` and `growth_rate()` gave it a value
+  computed from the last real year, `beta_convergence()` dropped its whole
+  country, `sigma_convergence()` and `share_of_world()` reported a phantom `NA`
+  year, and `interpolate_missing()` crashed on it, and could have overwritten
+  an undated observed value with `NA`. Undated rows are now left out of
+  anything that needs a position in time.
+* **`complete_years(method = "locf")` carried values in row order**, not time
+  order, when the data held years outside `years`, and returned the frame out
+  of order.
+* **The United Kingdom left the EU a day early.** `country_groups_history`
+  reads `to` as the first day of non-membership (Austria left EFTA and joined
+  the EU on 1995-01-01), but the UK's exit was recorded as 2020-01-31, its last
+  day as a member. It is now 2020-02-01, and the column's help states the
+  convention.
+* **`projection_distortion()` measured a WGS84 projection against a sphere.**
+  Equal Earth read between 0.9955 and 1.009 instead of 1, and Mercator showed
+  up to 0.38 degrees of angular distortion, contradicting both checks its
+  documentation offers. It now uses the ellipsoid's radii of curvature and
+  central differences: Equal Earth, Gall-Peters and the Lambert azimuthals read
+  1, Mercator 0, and the 0.7% that Mollweide and Eckert IV show (PROJ applies
+  their spherical formulas to the ellipsoid) is documented.
+* **`theil(na.rm = FALSE)` broke its own decomposition on a missing group.**
+  The row stayed in `total` and fell out of both components, so `total` no
+  longer equalled `between + within`. It now returns `NA`, as it already does
+  for a missing value under `na.rm = FALSE`.
+* **Reports that said something false.** `country_timeline()` warned that
+  "Tanganyika", "Zanzibar" and the "United Arab Republic" matched nothing while
+  returning their history. `audit_time_coverage()` returned a phantom all-`NA`
+  row for an unreadable year, and now names the dissolved codes it flags.
+  `compare_sources()` kept unresolved keys as `iso3c = NA` rows, counted them
+  in `only_x`/`only_y`, and called two of them "a duplicate country".
+  `index_to()` and `deflate()` reported two unidentified countries as "1
+  country: NA". `world_table()` gave tied values different ranks.
+  `country_join()` and `country_join_all()` warned that `iso3c` was "replaced"
+  when it was the join column itself. `subnational_map(projection = )` printed
+  raw cli markup and advised `geometry = "sf"`. `audit_coverage()` left a blank
+  code out of `unmatched`, and `check_dispute_coverage()` listed `NA` and
+  repeated values as bad codes.
+* **Inputs accepted and then failed somewhere else.** A numeric `region` that
+  is not a four-number box (`region = 250`) drew an empty map, and a reversed
+  box was accepted. Custom `country_weights()` codes were taken verbatim, so
+  lowercase ones made every statistic report "Not enough connected countries"
+  with advice about islands; they are normalised, and codes that differ only in
+  case are now named as the key problem they are. `spatial_lag()` on a panel
+  aborted entirely when one year was too sparse. `deflate()`, `to_ppp()` and
+  `rate_check(rate = )` did not check that their value column was numeric, and
+  `per_capita()`, `to_ppp()` and `add_indicator()` leaked dplyr's join-type
+  error for a character `year`. `value_by_alpha_map()` drew a character
+  `value` as categories labelled "quantile". `classify_compare()`,
+  `projection_compare()` and `od_map()` died on "factor level [2] is
+  duplicated" for a repeated method, projection or origin.
+  `country_join_all(by = iso3c)` gave "object 'iso3c' not found".
+  `historical_geometry(Inf)` failed inside `as.Date()`, `locate_country()` on
+  zero points leaked four base R warnings, and
+  `as_ggsql_source(format = "parquet")` left its connection open when the
+  write failed.
+
+* **`interactive_map(engine = "leaflet")` hard-wired a numeric colour scale.**
+  A discrete fill reached `leaflet::colorNumeric()` and died inside leaflet
+  with "Wasn't able to determine range of domain" -- the same defect
+  `auto_fill_scale()` was written to fix for the ggplot2 engines, and that the
+  `mapgl` engine handles with `match_expr()`. `?interactive_map` documents no
+  per-engine restriction on `fill`, so the leaflet engine now branches on the
+  column's type and uses `colorFactor()` for a discrete one.
+* **The leaflet engine could be broken by a column named `pal`.** Its
+  `fillColor = ~ pal(get(fill_name))` formula was evaluated by leaflet against
+  the data as an environment, so a column of that name was found before the
+  palette function and then called. The values are computed directly now, which
+  also removes the only `get()`-in-a-formula column read in the package.
+* **The leaflet and ggiraph engines read `iso3c` without checking for it.**
+  `check_cols()` covered `fill` and `tooltip`, and `check_map_geometry()` does
+  not require a key, so an `sf` frame without one failed at render time from
+  inside leaflet or rlang. Both now name the missing column.
+* **`bubble_map(backend = "sf")` carried two geometry columns.**
+  `as_tibble()` strips the `sf` class but leaves the live `sfc` column, so the
+  `st_drop_geometry()` further down saw a plain tibble and returned it
+  unchanged -- and the join then produced `geometry.x` / `geometry.y`, renaming
+  the active column out from under `coord_sf()`. It now uses `sf_drop()` first,
+  as four other verbs already do.
+* **`index_to()` returned an all-`NA` column in silence, three ways.** It and
+  `deflate()` take the same `base_year` and match it the same way, and
+  `deflate()` reports every case where the rebasing cannot happen while this
+  reported none. A `Date` or `POSIXct` `year` was the worst: `==` coerces the
+  *number* to that class, so `as.Date("2000-01-01") == 2000` compares against
+  1970-01-01 plus 2000 days and is false for every row -- every country
+  indexed to `NA`, and `read.csv()` with a date-parsing reader produces
+  exactly that column. That shape is now refused by name. A `base_year` the
+  panel does not cover, and a country whose base-year value is missing or
+  zero, still come back `NA` as documented -- but the verb now names the
+  countries it could not index, so an all-`NA` column is readable rather than
+  indistinguishable from a source that had no data. A *character* `year` still
+  works, deliberately: this verb only matches on the year, and `"2000" ==
+  2000` is true.
+* **`deflate()` aborted on a zero-row panel**, reporting "Years present: Inf
+  and -Inf" from `range()` of nothing, and would have asked the World Bank for
+  the year range `Inf..-Inf`. It returns early with the promised column,
+  typed.
+* **`rate_check()` warned that a zero-row frame had no usable denominator.**
+  `quantile()` of an empty vector is `NA` too, so the guard for an all-`NA`
+  denominator fired for a frame that simply had no rows.
+* **`beta_convergence()` and `convergence_club()` leaked base R's "essentially
+  perfect fit: summary may be unreliable".** It named neither the verb nor the
+  column, and from `convergence_club()` it described an internal log-t
+  regression the caller does not know exists. `beta_convergence()` now says so
+  in the package's own voice -- naming which columns are meaningless as a
+  result -- and the internal fit is silent.
+* **`simplify_geometry()` skipped its documented MULTIPOLYGON cast for an
+  `sfc`.** The validator accepts `sf` and `sfc`; the cast gated on `sf` alone,
+  so half the accepted inputs came back as a mix of POLYGON and MULTIPOLYGON.
+* **`world_table(engine = "gt")` rendered `year` as "2,020".** `year` now joins
+  `rank` in the columns `fmt_number()` leaves alone -- it is an identifier, not
+  a measurement.
+* **`tile_map()`'s provenance called a numeric fill "categorical".**
+  `auto_fill_scale()` picks the scale from the column's type, so a numeric fill
+  was drawn continuously and recorded as categorical, in the record whose job
+  is to say what was drawn.
+* **`split_antimeridian()` wired up only the last crossing.** A carry row was
+  computed and stored for every crossing but only the last was read, so with
+  two or more crossings the middle segments began at their first raw vertex
+  instead of at the antimeridian edge, leaving a visible break on the re-entry
+  side. The code read as though it were general; it handled one.
+* **A `region` that resolves to `NA` codes selected uncoded geometry.**
+  `resolve_region()`'s continent branch reads countrycode's codelist, where a
+  few rows carry a continent and no `iso3c`, and `%in%` treats `NA` as a value
+  -- so `NA %in% c("FRA", NA)` is `TRUE` and a subset keyed on the result
+  pulled in every geometry row whose own `iso3c` was `NA`. The `sf` backend
+  guarded this; the polygon backend did not. The codes are now filtered at the
+  source, so all callers are covered.
+* **`country_overrides()` accepted any string as an `iso3c` value.**
+  `wdj_to_iso3c()` whitelists every override value as a legitimate code, so
+  `country_overrides(c(Freedonia = "1"))` put `"1"` in the `iso3c` column and
+  every join keyed on it. Values must now look like an ISO 3166-1 alpha-3
+  code. Separately, `any(!nzchar(nms))` missed an `NA` name -- `nzchar(NA)` is
+  `TRUE` -- while `wdj_to_iso3c()` rejected one, so the two validators
+  disagreed about what a valid override table is.
+* **`world_query()` interpolated identifiers into SQL without escaping them.** Only `title`
+  was escaped, and it is the one value that lands inside quotes; every other
+  name went in as bare SQL. A column name with a space produced invalid SQL
+  with no diagnostic, and a name derived from untrusted input reached a string
+  that `ggsql::ggsql_execute()` then runs. `fill`, `source`, `size`, `facet`,
+  `projection`, `palette` and `transform` are now checked against a plain SQL
+  identifier.
+* **`nuts_geometry(countries = "Germany")`** said "NUTS covers the EU, EFTA and
+  candidate countries only" -- true, and not the problem. `countries` is read
+  as `iso3c`, so a country name resolves to nothing; the error now names the
+  origin that would have worked.
+* **`od_map()`'s `origin` and `origins`** are one letter apart and adjacent in
+  the signature, and mean unrelated things. Both mix-ups used to fail somewhere
+  else; each is now diagnosed where it was made.
+* **`geom_country_labels()` did not validate `size` or `mapping`**, which feed
+  ggplot2 arithmetic and `modifyList()` respectively; `world_table()` checked
+  `title` but not `subtitle`; and `ggsql_wkb_frame()` overwrote an existing
+  column of the geometry column's name in silence, where eleven other
+  column-adding verbs warn.
+* **`world_query()` silently ignored arguments its layer does not use.** `size`
+  belongs to `layer = "bubble"` and `n_bins` to `layer = "binned"`, and the
+  other layers took them without a word: `n_bins` was dropped, since only the
+  binned layer emits a `BIN` clause, while `size` still went into the
+  `VISUALISE` list as `pop AS size` on a choropleth, which has no size channel
+  to put it on. Both are now reported, together when both are given. The
+  emitted query is unchanged -- a pass-through builder passing a clause through
+  is defensible -- but the silence was not, since the abort beside it already
+  treats a layer/argument mismatch as worth naming.
+
+* **`globe_map()` crashed at some viewpoints with an error from the geometry
+  engine.** `globe_map(sf_data, lon = 90, lat = 30)` died on
+  `IllegalArgumentException: point array must contain 0 or >1 elements`, which
+  names neither the projection nor the viewpoint. `coord_sf()` draws a
+  graticule, and on the one genuinely hemispheric projection those lines are
+  clipped at the horizon -- a clipped line can reduce to a *single* point,
+  which GEOS rejects. `winkel_tripel` already had `datum = NA` for its own
+  graticule trouble; `"orthographic"` now does too, and all 65 sampled
+  viewpoints draw. The other three azimuthal projections show the whole globe,
+  so nothing is clipped and they are unaffected.
+
+* **`country_weights()` silently ignored the arguments its scheme does not
+  use.** `k`, `cutoff_km`, `w` and `scale` each belong to exactly one scheme,
+  and the other three dropped them without a word. The costly case is
+  `country_weights("knn", w = my_matrix)`: the caller's own adjacency matrix was
+  discarded and nearest-neighbour weights returned instead, so the result looks
+  entirely reasonable and is not what was asked for. `cutoff_km` passed to
+  `"knn"` reads as a distance cap that was never applied, and `scale` only ever
+  affected `"contiguity"`. All eleven combinations now report which arguments
+  were ignored and which one the chosen scheme is built from; each scheme's own
+  argument, the shared `style`, and a default passed explicitly stay quiet.
+
+* **Arguments that do not apply were silently ignored by the map verbs.** The
+  package reports an inert argument rather than pretending to honour it --
+  that is what `warn_projection_ignored()` and `warn_recenter_ignored()` are
+  for, and `attach_geometry()`, `world_geometry()`, `world_data()` and
+  `join_world()` all call them. `world_map()` did not, though it takes both
+  arguments and is the verb people actually reach for: on the polygon backend,
+  which draws in unprojected longitude/latitude, `projection = "mollweide"`
+  and `recenter = 180` looked honoured and changed nothing. `n_bins` was inert
+  in the same way under `style = "continuous"` (a colourbar has no classes)
+  and `style = "categorical"` (the classes are the values) -- the same
+  complaint the 3.0.0 fix for `style = "binned"` answered. All three are now
+  reported, under `countryatlas_projection_ignored`,
+  `countryatlas_recenter_ignored` and `countryatlas_n_bins_ignored`, and
+  `value_by_alpha_map()` gets the two that apply to it since it carries its own
+  copies of those arguments. `facet_map()` and `coverage_map()` inherit them by
+  passing `...` through.
+
+* **`attach_geometry(year = )` warned about the caller's frame size, not the
+  geometry.** Its threshold was `matched < nrow(geom) * 0.5`, so an ordinary
+  three-country frame -- 3 of the 97 entities CShapes has for 1960 -- was told
+  "only 3 of 97 historical entities matched" and advised to join on `gwcode`
+  "for full historical coverage", which is not what someone asking for three
+  countries wants. What the message claimed is a property of CShapes rather
+  than of the request: a few entities never had an ISO code (6 of 97 in 1960,
+  3 of 174 in 2019) and no `iso3c` join can reach them. That is what it now
+  reports, independently of the frame, and the nothing-matched case is left to
+  the same helper every other geometry verb uses. The whole historical branch
+  had no test coverage.
+
+* **A missing-column error named an argument the function does not have.**
+  `check_cols()` wrote `` `data` `` into its message unconditionally, which is
+  right for the twenty-odd verbs whose frame argument is called that and wrong
+  for the three whose is not: `country_weights(w = )` reported ``Columns
+  "iso3c" and "neighbor" not found in `data``` and
+  `cartogram_diagnostics(x = )` reported ``Column "nope" not found in
+  `data```. The helper now takes the name to use, and the duplicated-column
+  error beside it does too.
+
+* **A provider renaming its time column turned the years into the values.**
+  `adapter_reshape()` -- the shared step that puts a provider's response into
+  the package's shape, behind `fetch_owid()`, `fetch_eurostat()`,
+  `fetch_oecd()` and `fetch_comtrade()` -- checked that the entity and value
+  columns exist but not the year column. The value column is auto-detected as
+  the first numeric column *other than the year*, excluded by name, so with the
+  year column missing the exclusion removed nothing and the provider's own time
+  column was picked as the indicator: the mapped values came back as 2000,
+  2001, 2002 while `year` was entirely `NA`, with nothing said. A missing year
+  column is now reported like the missing value column beside it.
+
+* **`locate_country()` gave a raw sf error for a points object with no CRS.**
+  `sf::st_as_sf(df, coords = c("lon", "lat"))` leaves the CRS missing whenever
+  `crs` is forgotten, and the object then reached `st_transform()` and came
+  back with sf's "cannot transform sfc object with missing crs" -- naming
+  neither the argument nor the fix. The non-sf case one line above had already
+  been given a proper message; this is the same failure one step further in.
+  It now says which argument is at fault and how to set the CRS.
+
+* **`subnational_map()` joined against the wrong column when the caller's code
+  column collided with the geometry's.** The geometry side is meant to be
+  `nuts_id` "whatever the caller's column is called", but the guard was
+  `if (!by %in% names(geom))` -- false exactly when `by` names one of the
+  geometry's own columns. `by = "name"` therefore joined the caller's NUTS
+  codes against the geometry's region *names* and matched nothing, and
+  `by = "iso3c"` silently joined at country granularity instead of regional.
+  `by` is documented as "the code column in `data`", so the geometry side is
+  now always `nuts_id`.
+
+* **`subnational_map()` blamed the codes for an all-`NA` indicator.** It counted
+  matches as `sum(!is.na(fill))`, so a panel whose indicator is entirely `NA`
+  -- a real thing to map, and one this package draws with an `na.value` and
+  reports in the caption -- was refused with "no rows matched the geometry",
+  sending the reader to check NUTS vintages for a mismatch that never happened.
+  The count is now taken on the join key. Both of these sat in code that no
+  test reached, because the path needs a GISCO download: `R/subnational.R` was
+  at 66% coverage where every other file was above 90%. It is now exercised
+  with a mocked `nuts_geometry()`.
+
+* **`correlate_indicators()` let a tidyselect error through for a missing
+  column.** Every other verb reports one as ``Column "x" not found in `data```;
+  this one selected through `dplyr::select()` and surfaced the
+  `vctrs_error_subscript_oob` raised by tidyselect -- "Can't select columns
+  that don't exist" -- which was the last error at this boundary not carrying
+  the package's class.
+  The selection is a full tidyselect expression, so it cannot be checked by
+  name up front; the failure is caught and re-worded instead, and
+  `starts_with()`, `where()`, ranges, bare columns and the no-argument form all
+  still work.
+
+* **Rows whose `iso3c` did not resolve were treated as one country.**
+  `dplyr::group_by()` puts every `NA` in a single group, so a panel carrying
+  two unmatched names was one country to every verb that reads a neighbouring
+  row within it: `growth_rate()` reported the change from one unmatched row to
+  the next -- 899% between two unrelated countries -- and `lag_by_country()`,
+  `diff_by_country()`, `index_to()`, `interpolate_missing()`, `deflate()` and
+  `beta_convergence()` read across them the same way, silently. That frame is
+  exactly the one a user is most likely to hold, because
+  `standardize_country()` has already warned that those names did not match
+  and left their `iso3c` as `NA`. The grouping now falls back to whatever does
+  identify the row -- the same `country`, then `group` order
+  `distinct_countries()` uses for its uncoded branch -- so an appended
+  aggregate row (no `iso3c`, `country = "World"`) still groups as one series,
+  while rows nothing identifies each get a key of their own and are no longer
+  read across. `complete_years()` had the same conflation twice over: the two
+  unresolved rows shared one completed year grid, and the geometry carry that
+  gives invented rows their country's shape matched on `iso3c` -- where
+  `match()` treats `NA` as equal to `NA` -- so it copied one unidentified
+  country's polygon onto the other's invented rows. Both are keyed on the unit
+  now, and each unresolved row gets its own grid and its own shape.
+
+  A blank code is treated the same way. `""` is not `NA`, so every `is.na()`
+  guard missed it -- but `read.csv()` without `na.strings = ""` gives a blank
+  for every empty cell, and `standardize_country("")` already resolves to
+  `iso3c = NA`, so a blank identifies no country anywhere else in the package.
+  Two blank-coded rows produced the same fabricated 899%. Whitespace-only codes
+  count as blank too, using the same Unicode `[\h\v]` class
+  `standardize_country()` uses rather than `trimws()`'s ASCII-only default.
+
+  The two panel guards were keyed on `iso3c` while the verbs grouped by the
+  unit, which made them disagree: four single-year unidentified rows were
+  reported as one country with gaps between them, and two unidentified rows in
+  the same year as a duplicated country-year. Both now key on the unit, so
+  they describe what the verb actually did; a genuinely duplicated
+  country-year and a genuinely irregular panel are still reported.
+
+* **The unparseable-year warning printed its own markup and padded its list
+  with `NA`s.** Two defects in one message. cli does not re-interpolate a
+  substituted value, so `{source_label}` emitted the label verbatim: three of
+  the six call sites showed users `` `{.arg data}`: 2 time values are not a
+  year `` and, from the public source extension point, `Source {.val
+  {source}}:` -- where the braces also referenced a variable that exists only
+  in the caller's frame. Separately, the list of offending values was sliced to
+  `min(4, sum(bad))`, sizing it by the number of bad *rows* while the values
+  themselves were de-duplicated, so a column of one repeated placeholder --
+  `"N/A"`, `".."`, `"-"`, the common case -- read `"N/A", NA, NA, and NA`. The
+  label is now pre-rendered in the caller's environment and the list is taken
+  with `head()`, so the warning names its source and shows only values that
+  are really there.
+
+* **`audit_time_coverage()` invented history for a factor `iso3c`.** It looked
+  the dissolution and succession dates up by indexing a *named* vector with the
+  frame's `iso3c` column -- and indexing a named vector with a **factor**
+  selects by the factor's integer codes, not its labels. A frame from
+  `read.csv(stringsAsFactors = TRUE)` therefore matched whichever rows of
+  `historical_codes` happened to sit at those positions: a clean panel of
+  France, Germany, Italy and Spain came back reporting France dissolved in
+  1993, Italy in 1992, Spain in 1991 and Germany as existing only from 2010,
+  from the one verb whose whole job is catching that kind of mistake. The
+  `year` key had already been hardened against the same class of bug (a `Date`
+  year became a day count, hence `read_year()`); the `iso3c` key had not. The
+  column is now coerced before the lookup, so a factor `iso3c` gives the same
+  answer as a character one -- verified across 27 verbs, none of which now
+  differ on a factor `iso3c` or an integer value column.
+
+* **A stray 60 KB `Rplots.pdf` shipped inside the source tarball.** Printing a
+  plot with no device open makes R open the default one, which in a
+  non-interactive session writes `Rplots.pdf` into the working directory -- for
+  the test suite, `tests/testthat`. `.Rbuildignore` carried `^Rplots\.pdf$`,
+  anchored at the package root, so it matched the root copy and not the nested
+  one, and `R CMD build` included the artefact. The pattern is now unanchored,
+  and a test setup file points the default device at the null file so the file
+  is not written in the first place -- plots still render, so a drawing error
+  still fails a test.
+
+* **A factor `year` column silently produced wrong numbers.** `dplyr::arrange()`
+  and `order()` sort a factor by its **level index**, not by the label, and
+  `stats::approx()` coerces a factor the same way. A year column arrives as a
+  factor more often than it looks -- `read.csv(stringsAsFactors = TRUE)`, some
+  importers, and any deliberate `factor(year)` for plotting -- and every verb
+  that reads a *neighbouring* row then read the wrong neighbour.
+  `lag_by_country()` and `diff_by_country()` took the value from the wrong
+  year, `growth_rate()` reported `-0.75` on a series that had doubled, and
+  `interpolate_missing()` left the gap `NA` because the targets fell outside
+  the anchors it had mis-placed. Nothing warned: the panel came back the right
+  shape with the wrong values. `warn_irregular_years()` had the same trap from
+  the other side -- `as.numeric()` on a factor returns level indices, so it
+  reported a perfectly regular annual panel as having gaps. The nine
+  year-ordering sites, the linear interpolation path and the gap check now go
+  through one `year_sort_key()` helper, so a factor or character year gives the
+  same answers as a numeric one, and the gap warning is now classed
+  `countryatlas_irregular_years` so a deliberately decadal panel can silence
+  just that one. `earliest_per_unit()` had carried this coercion since 2.0.0,
+  which is why the map-drawing path was
+  unaffected and this survived. A year column that is not numeric at all -- an
+  ordered factor of period labels -- still sorts by its own order, and
+  `complete_years()` still asks for a numeric year, since it has to generate
+  the grid rather than merely order it.
+
+* **A bare column name was reported as "object not found" by six arguments.**
+  A handful of arguments take a column name as a *string* while the verbs
+  around them take a bare column through tidy eval, so the package converts
+  that predictable slip into a message naming the argument and showing the
+  quoted form to write. The conversion had been applied to the `value`,
+  `indicator`, `columns`, `codes` and `by` arguments of `interpolate_missing()`,
+  `complete_years()`, `audit_coverage()`, `world_table()`, `country_codes()`
+  and `aggregate_regions()`, and not to the join-key and query arguments of
+  the same shape: `aggregate_regions(by = region)` explained
+  itself while `attach_geometry(by = iso3c)`, `subnational_map(by = nuts_id)`,
+  `register_country_source(key_col = iso3c)`, `world_query(facet = year)`,
+  `world_query(size = pop)` and `as_ggsql_source(geometry_col = geom)` all
+  reached the user as base R's "object 'iso3c' not found". All six now report
+  the argument and the fix. A genuine error inside such an argument still
+  surfaces as itself.
+
+* **The plotting verbs rejected a column passed as a string.** Every unquoted
+  column argument in the package goes through one helper, whose own error hint
+  tells the user to "pass the column unquoted (`fill = my_col`) or as a
+  string", and the column check then accepted the string form happily. But
+  `world_map()`, `tile_map()`, `bubble_map()` and `interactive_map()` spliced
+  the captured expression straight into `aes()`, which honours only the
+  unquoted form: `fill = "value"` mapped the constant string `"value"`. The failure then arrived at
+  *build* time, from ggplot2, as "Discrete value supplied to a continuous
+  scale" (or "Binned scales only support continuous data" under `style =
+  "binned"`) -- naming neither the argument, nor the column, nor the fix, which
+  is the exact failure the helper exists to prevent. `world_map(d, "value")` --
+  the package's most common call -- errored while `world_map(d, value)` drew.
+  The mapping is now built from the validated column *name*, so both forms
+  produce the same plot; `coverage_map()`, `spike_map()` and the `quantile`,
+  `jenks` and `categorical` styles were already correct, which is why this
+  survived.
+
+* **`interpolate_missing()` invented data across decades.** `max_gap` is
+  documented as "the longest run of consecutive missing *years* to fill ...
+  because interpolating across a decade is not interpolation", and it counted
+  missing **rows**. On any panel that is not annual the guard was therefore
+  defeated: a decadal panel of 2000, 2010, 2020 with 2010 missing is one
+  missing row, so the default `max_gap = 3` filled it -- placing an invented
+  value ten years from either anchor, the exact thing the parameter exists to
+  refuse. Five-yearly data was interpolated across 15 years the same way.
+  A run is now refused if it is longer than `max_gap` in rows -- which is what
+  an annual panel means by consecutive missing years, so annual behaviour is
+  unchanged -- or if any filled year sits further than `max_gap` from its
+  *nearest* observation, which is what makes the decadal case wrong. Measuring
+  the bracketing span instead would have been too blunt: on 2000, 2001, 2005
+  the filled 2001 is one year from an anchor and interpolating it is sound,
+  even though the span is five. The documentation was already right; the code
+  has caught up with it.
+
+* **`interpolate_missing(method = "linear")` leaked a dplyr internal for a
+  year it could not read.** Linear interpolation places the filled value
+  *along* the year axis via `approx()`, so a labelled year column arrived as
+  `NA` and surfaced "need at least two non-NA values to interpolate" wrapped
+  in an `across()` error, naming neither the column nor its type. It is now a
+  classed error naming the unreadable values and pointing at
+  `method = "locf"`, which carries the last value forward in row order and
+  needs no arithmetic. It tests whether the year can be *read* as a number
+  rather than whether it is numeric, deliberately: `approx()` reads `"2000"`
+  happily, so a character year still works here --
+  the difference from `deflate()` and `beta_convergence()`, which do the
+  arithmetic themselves.
+
+* **`gearys_c()` and `getis_ord()` listed their count columns without saying
+  what they count.** `morans_i()` defines all three -- `n` (countries used),
+  `n_excluded` (countries with data the weights could not reach), `n_links`
+  (non-zero weights) -- and the other two named the same columns and left them
+  undefined, so a reader had to go to a third function's page. The counts are
+  consistent: verified across all six spatial verbs on one graph, `n` is 187
+  everywhere it appears, `n_excluded` 2, `n + n_excluded` is the 189 countries
+  supplied, `n_links` matches the non-zero weights, and the local forms return
+  exactly `n` rows. All of that is now stated where the columns are listed.
+
+* **`audit_coverage()` did not say which way round its counts run.** Its
+  `@return` described the three elements but none of their columns, and both
+  `na_rates$n` and `by_group$n_countries` are *denominators* -- everything
+  counted, not everything present. That is the opposite orientation from
+  `map_provenance()`, whose `n_countries` is the numerator, and the two share
+  that column name: on 215 countries with 24 missing, `audit_coverage()` gives
+  `n = 215` where `map_provenance()` gives `n_countries = 191`. The package had
+  already spelled this out for `map_provenance()` ("the numerator, not the
+  denominator, which its name does not say on its own"); the verb whose whole
+  purpose is reporting coverage had not. Every column is now defined, with the
+  contrast stated. The numbers themselves were correct throughout -- verified
+  against the data, including that the group counts sum to `n` and each
+  `na_rate` is the within-group share.
+
+* **`as_ggsql_source()` accepted things that are not data, and gave a bare
+  error for a closed connection.** `data` is documented as a map-ready frame
+  and was never checked, so `as_ggsql_source(1:5)` wrote an integer vector out
+  as a table and returned a connection -- a "world source" containing no
+  countries at all -- while `NULL` surfaced *Data frame with at least one
+  column required*, a message from DuckDB rather than from here. A `con` the caller had already closed reached
+  `dbWriteTable()` as base R's unclassed *Invalid connection*, naming neither
+  the argument nor its state. Both are now classed errors, checked at the one
+  point that knows whose connection it is -- which is also why the existing
+  bookkeeping there closes a connection the function opened and leaves one
+  passed in alone.
+
+* **A negative or infinite custom weight was accepted and quietly changed the
+  answer.** `country_weights("custom", w = )` validated the matrix's dimnames,
+  squareness, type and `NA`s, and the type message even promises "any
+  non-negative number" -- but nothing enforced it. Row standardisation divides
+  by the row sum, so one negative weight moved Moran's I from 0.714 to 0.497
+  with no warning, and an *all*-negative matrix cancelled to exactly the
+  all-positive answer, discarding the caller's signs entirely. An infinite
+  weight normalised to `NaN`, and the verb then reported *not enough connected
+  countries with data* -- diagnosing connectivity when the cause was the
+  weight. `gini()`, `theil()` and the global G all refuse a negative input for
+  the same reason, so both are now classed errors naming how many entries are
+  at fault. The long-frame form of `w` gets the same two checks, and all three
+  built-in constructors satisfy them.
+
+* **A partly named `custom_match` silently ignored the unnamed entries.** The
+  check tested `is.null(names())`, which catches a wholly unnamed vector but
+  not `c(Freedonia = "FRA", "DEU")`, whose names are `c("Freedonia", "")`. An
+  entry named `""` or `NA` can never match a spelling, so it sat there doing
+  nothing while the caller believed it was overriding something -- the same
+  silent-but-useless entry the surrounding comment was written about, and
+  invisible in the output, unlike a mistyped code which at least shows up in
+  the `iso3c` column. Every element must now be named. Values are still not
+  checked against the ISO list, deliberately: the package's own overrides map
+  Kosovo to `XKX`, a World Bank user-assigned code that is not in
+  `countrycode::codelist$iso3c`, so validating that way would reject the very
+  case overrides exist for.
+
+* **A custom source that failed, or was written with the wrong signature,
+  reported neither.** `register_country_source()`'s boundary checks what an
+  adapter *returns* thoroughly -- a non-data-frame, a missing key column and a
+  duplicate key are all named and pointed at the fetch contract -- but not the
+  call itself. An adapter that raised its own error re-raised it bare, so
+  `"provider is down"` reached the caller with nothing to say which source
+  produced it; and one defined as `function(indicator)` surfaced R's
+  `unused arguments (countries = countries, years = years)`, naming neither the
+  source nor the documented arity. Both are what someone developing an adapter
+  hits, and both are the one moment the package knows which source it just
+  called. They are now classed errors that name the source, preserve the
+  provider's own message verbatim (braces included -- a cli template would
+  have interpolated them), and point at the contract.
+
+* **A flow between near-antipodal countries was drawn as a streak across the
+  top of the map.** `great_circle()` sampled a fixed 50 points along the arc,
+  and a near-antipodal arc passes within half a degree of a pole, where
+  longitude turns almost arbitrarily fast: Belgium to Tonga stepped 131 degrees
+  of longitude between two consecutive points, Greenland to Japan 121, Tonga to
+  the Netherlands 136. `split_antimeridian()` only cuts a step wider than 180,
+  so none of these were cut and `geom_path()` joined them literally -- the same
+  failure that function was written to fix for trans-Pacific flows, caused by
+  the pole rather than the antimeridian. 16 of 8010 real ordered country pairs
+  hit it, every one at latitude 87 to 89.
+    The path itself was right; 50 points is simply too coarse where it turns
+  fastest, and the step shrinks in proportion to the sample count. The
+  offending segments are now bisected until every step is under 20 degrees, so
+  all 8010 pairs come in under that, at a cost of at most 63 points instead of
+  50. An ordinary arc never trips the threshold and keeps its `n` points
+  exactly.
+
+* **`gridded_cartogram()` now documents that crowded neighbours overlap.**
+  Each country's block is centred on its own centroid with no collision
+  avoidance -- a deliberate choice, since a global packing solve would push
+  countries away from where they belong, and it was recorded in a code comment.
+  It was not in the documentation, though, and it is not marginal: at the
+  defaults about a third of the cells are drawn on top of a cell belonging to a
+  different country, across some sixty countries, rising to roughly two thirds
+  at `cells = 2500`. A partly hidden block cannot be counted or compared, which
+  is the one thing this verb asks the reader to do. A new section says so,
+  quantifies it, and names `cell_size` as the lever -- dropping it from `2.5` to
+  `1.5` cuts the overlap at `cells = 1000` to about a tenth -- with a pointer to
+  `dorling_map()`, which resolves collisions by displacement instead.
+
+* **`beta_convergence()` returned a silent `NA` for `speed` and `half_life`
+  on an unbalanced panel, and the documented reason did not apply.** Turning
+  `beta` into an annual rate inverts `beta = -(1 - exp(-lambda T))/T`, which
+  needs `1 + beta * T > 0`. That holds whenever every country spans the same
+  `T`, but `beta` is fitted on growth already annualised per country, so a mix
+  of spans leaves the mean span irreconcilable with the fitted slope. On a
+  panel where half the countries were observed for 10 years and half for 50 --
+  ordinary coverage for real data -- `beta` came back at -0.041 with
+  `p = 9.5e-14` and `r_squared = 0.96`, unmistakable convergence, while the two
+  most interpretable columns were blank and the documentation said `NA` meant
+  `beta >= 0`, which it plainly was not. The guard itself was right: `log()` of
+  a negative is not a speed. It now warns, naming the range of spans and saying
+  that `beta` and its inference are unaffected, and the documented `NA`
+  conditions list both cases.
+
+* **`local_morans()` returned a `lag` column that was not the neighbour
+  average it is documented as.** It reported the lag of the *centred* value,
+  which is what the statistic and the quadrants are built on, beside a `value`
+  column that is raw -- so the two columns in the same tibble were on
+  different scales, and neither matched `spatial_lag()`'s column of the same
+  name. That breaks the Moran scatterplot the pair exists for: with `value`
+  centred on 17384 and `lag` on 0, the quadrant boundaries fall in different
+  places on the two axes, so the usual reference lines disagree with the
+  `cluster` column beside them. The reported `lag` is now the plain neighbour
+  average, identical to `spatial_lag()`. The centred lag is still what `ii`
+  and the four quadrants use internally, which is what Anselin (1995) defines
+  them on, so no statistic, p-value or cluster label changes.
+
+* **A value-suppressing uncertainty palette drew nothing when only one
+  country was usable.** The two axes are ranked with `percent_rank()`, which
+  is `(rank - 1)/(n - 1)` and therefore `NaN` for a single observation, so
+  `cut()` returned `NA` and the row got no colour -- a country whose value and
+  uncertainty were both present, drawn as though neither were. This is not a
+  one-row-input curiosity: a mostly-missing uncertainty column with a single
+  usable country blanked the entire VSUP layer. A lone observation has no rank
+  position relative to others, so it now lands in the middle of each ramp,
+  claiming neither extreme, which is also where a maximally uncertain value
+  sits. Rows that are genuinely missing still get no colour, and a palette
+  with more than one usable row is unchanged.
+
+* **`rate_check()` ranked a zero-count row as the most reliable in the
+  table.** The output is documented as "sorted with the least reliable first",
+  and it sorted on `expected_se`, which is the Poisson standard error
+  `sqrt(y)/d` -- exactly `0` when the count is `0`. So a country with no
+  events out of 251 people sorted *last*, presented as the most trustworthy
+  row on the page, while another with one event out of the same 251 sorted
+  first as the least trustworthy. Observing nothing is not evidence of
+  precision; it is the small-number problem this verb exists to name, and
+  nothing else in the output caught it either, because the default threshold
+  is a quantile of the denominators. The ordering now uses the standard error
+  a single event would imply, `sqrt(max(y, 1))/d`, which is identical to
+  `expected_se` for every row with at least one event -- so no other row
+  moves -- and `expected_se` itself is unchanged, still the plain Poisson
+  standard error.
+
+* **`convergence_club()` found no clubs at all on an indexed panel.** The
+  log-t statistic refused to compute whenever `H_1`, the cross-sectional
+  dispersion in the *first* period, was zero -- and it is exactly zero
+  whenever every country starts equal, which `index_to()` guarantees by
+  construction. So the natural pipeline, `convergence_club(index_to(panel,
+  value, base_year = ...), value_index)`, silently placed nobody: the same
+  panel in levels found seven clubs covering 16 of 20 countries, and indexed
+  found none.
+
+  `H_1` cannot affect the answer. `log(H_1/H_t)` is `log(H_1) - log(H_t)`, and
+  `log(H_1)` is one constant across the regression, so it lands entirely in
+  the intercept while the statistic returned is the *t* on the slope --
+  verified bit-identical for `H_1` of 1e-6, 1 and 1e6, and for omitting it
+  altogether. The guard now requires only the periods inside the regression
+  window to be positive and finite, which also stops earlier periods being
+  over-checked when they never enter the fit. A window with genuinely zero
+  dispersion is still `NA`, since there is no decay rate to estimate.
+
+* **`repair_country_names()` promised something it does not do.** The
+  documentation said the no-`stringdist` fallback "repairs a subset of what
+  Jaro-Winkler would ... and never picks a different country". The second half
+  is false, and not marginally: the two metrics choose the nearest known name
+  independently, so `"Libia"` is repaired to Liberia with `stringdist` and to
+  Libya without it, both accepted at the default threshold. Across a
+  42-misspelling sweep the two disagreed on the candidate five times, once
+  reaching the user as a different substitution. No code change can make two
+  different string metrics agree on a nearest neighbour -- and normalising the
+  candidate gate in the fallback, which was the obvious repair, agrees *less* often
+  (35/42 against 37/42), so the metric is left alone. The documentation now
+  says plainly that the engines can land on different countries, recommends
+  installing `stringdist`, notes that neither metric is uniformly better
+  (Jaro-Winkler repairs `"Maroco"` to Monaco, not Morocco), and points at the
+  reported substitutions and the `"repairs"` attribute as the thing to check.
+  The same paragraph's aside about transpositions was ambiguously worded and is
+  now explicit with the numbers: the fallback charges two edits for a
+  transposition, so `"Germny"` is repaired (0.14) and `"Frnace"` is not
+  (0.33), where Jaro-Winkler scores the latter 0.06 and repairs it.
+
+* **`getis_ord(local = FALSE)` returned a silent `NaN` in three cases.** The
+  global G is a ratio of cross-products, and the denominator is zero when
+  every value is zero (`0/0`) or non-finite when the products overflow or
+  underflow at extreme magnitudes (`Inf - Inf`, or an underflow to `0`). The
+  branch immediately above it already warns and returns `NA` for negative
+  values, citing `gini()` as the precedent for "outside the domain is `NA`
+  plus a word about why"; these three slipped past it. They now warn and
+  return `NA` too, and the overflow message says that the statistic is
+  unchanged by a positive scale factor, so rescaling the column fixes it.
+
+* **The permutation p-values did not say which tail they used.** `morans_i()`
+  documented its own (one-sided, upper); `local_morans()` and `gearys_c()`
+  documented neither their tail nor that they consume the RNG. That matters
+  for reading them: `local_morans()` is two-sided, and `gearys_c()` is
+  one-sided on the *lower* tail -- the opposite way round from Moran's *I*,
+  because Geary's *C* runs from 0 (neighbours identical) up through 1 (no
+  autocorrelation), so a small `c` is the evidence of clustering. All three
+  now give the formula, note that the p-value can never be exactly zero (its
+  floor is 1/(`n_perm` + 1)), and say to set a seed for reproducibility.
+
+* **A categorical map's colours depended on the machine's collation locale.**
+  A character fill column reaches ggplot2 unfactored, and its discrete scale
+  derives the level order by sorting -- which consults `LC_COLLATE`. The same
+  script on the same data gave a legend of *Belgium, Chad, Zambia, aland,
+  Åland* under C collation and *aland, Åland, Belgium, Chad, Zambia* under
+  `en_US`, so every category was drawn in a different colour and two people
+  running identical code got different maps. The level order is now pinned
+  byte-wise (`order(method = "radix")`, which is precisely what a plain
+  `sort()` does not do), so it is the same everywhere. An incoming factor is
+  left alone -- the caller has already chosen an order. Same fix applied to
+  `interactive_map()`'s mapgl branch, where the sorted values are paired
+  positionally with the colour stops, and to the `classification_report`
+  fallback, whose rows came out in a locale-dependent order.
+
+* **`classify_compare()` drew half a panel as grey, and which half depended on
+  row order.** It took the class breaks from one arbitrary row per country --
+  the same flaw as the break computation behind `world_map()` -- but here every
+  row is then `cut()` against those breaks, so the rows the chosen year did not
+  cover fell outside the range and came back `NA`. On a two-year panel one
+  year classified correctly and the other vanished into `na.value`, and
+  swapping the input's row order swapped which. It now de-duplicates
+  `(country, value)` pairs, which still collapses the polygon-backend vertex
+  rows the de-duplication exists for and spans the panel otherwise.
+
+* **`distinct_countries()` disagreed with itself.** The branch for rows that
+  resolved to an ISO code picked the earliest year explicitly; the branch for
+  rows that did not, three lines below, still took `distinct()`'s first row.
+  A panel carrying an unmatchable country name in two years therefore kept the
+  earliest year for every country that resolved and an arbitrary one for the
+  country that did not. Both branches now use the same rule.
+
+* **`compare_sources()` dropped duplicate rows in silence.** A provider
+  answering twice for one country-year hands back whichever row came first,
+  order-dependently. `fetch_wdi()` reports exactly this and its comment argues
+  why -- *"this is the response of a third party, which is more reason to"* --
+  and this path said nothing. It now warns with the count and says the first
+  row was kept.
+
+* **A map's colour classes depended on the caller's row order.** The break
+  computation de-duplicated to one row per country, which is right for a
+  polygon-backend frame -- one row per vertex, hundreds per country, all
+  carrying the same fill, and quantiles must not be weighted by how complex an
+  outline is. But it picked an *arbitrary* row when a country's rows genuinely
+  differ, i.e. a panel: the same panel handed over in a different order gave
+  quantile breaks of `10-100` or of `1000-10000`, so the same data drew a
+  different map and nothing said so. It now de-duplicates `(country, value)`
+  pairs, which collapses the vertex rows exactly as before and spans the whole
+  panel otherwise -- what `facet_map(facet = "year")` wants from a shared
+  scale, and order-independent either way.
+
+* **Coverage counts depended on row order too.** `na_coverage()` -- behind the
+  `world_map()` caption, `map_provenance()` and the honest-maps verbs -- took
+  the first row per country, so the same panel reordered reported 2 of 4
+  countries missing or 0 of 4. It now counts a country as shown if any of its
+  rows has a value, matching `imputed_count()`; identical on the map-ready
+  cross-section it is documented for. This mattered in practice because
+  `facet_map(facet = "year")` deliberately hands `world_map()` the whole
+  panel, so that arbitrary number was the caption on a plot showing every year.
+
+* **`classification_report = TRUE` reported a different table for the same
+  map.** It counts countries per class, so one row per country is the right
+  shape, but it too used `distinct()`'s first row. It now takes the earliest
+  year, the rule `distinct_countries()` already promised, which is also now
+  shared between the two rather than written out twice.
+
+* **`map_provenance()` reported `n_imputed = 0` for every data frame**, no
+  matter how many values were interpolated. The data-frame branch never set
+  the field, and the fallback below it is `%||% 0L` -- so unlike the other
+  unset fields, which default to `NA` and claim nothing, this one asserted
+  that nothing had been imputed. A map-ready frame carrying two interpolated
+  values reported zero of them, in the function whose whole job is reporting
+  provenance. `n_imputed` is a data-side fact and is now computed from the
+  frame; the plot path is unchanged.
+
+* **`imputed_count()` picked an arbitrary row per country.** It counts once
+  per country, because a map draws one polygon per country, but it did so via
+  `distinct(.keep_all = TRUE)` -- the *first* row. Identical on the map-ready
+  cross-section it is documented for, but on a panel the first row is an
+  arbitrary year, so a value interpolated in any other year counted as nothing
+  imputed at all. Now "imputed in any row for this country".
+
+* **Running `interpolate_missing()` twice turned the imputation flag off**,
+  which the documented hard rule says cannot happen. The flag was recomputed
+  from scratch on each call as "was `NA` before, is not now" -- and after the
+  first call the filled cells are no longer `NA`, so every `TRUE` became
+  `FALSE`. `world_map()` reads that column to avoid drawing imputed values as
+  though they were observed, so a second defensive call -- or a re-run
+  notebook cell -- silently produced a map with no provenance caption.
+  "This value was imputed" is a property of the data, not of the call that
+  produced it, so an existing logical flag is now carried forward and the
+  operation is idempotent. Carried as a column rather than a vector, because
+  the pipeline re-sorts by `iso3c` and `year`. A flag column that is *not*
+  logical is somebody else's, and still warns that it is being overwritten.
+
+* **One infinite value silently voided a whole `z_score` column.** `scale()`
+  drops `NA` but runs an infinity straight through the mean and the SD, so a
+  single `Inf` made every `z_score` in `rank_countries()` `NaN` -- beside a
+  `rank` and a `percentile` that were still correct, because both are
+  rank-based and untroubled by an infinity. That is the easiest kind of
+  corruption to miss. `z_score` is now `NA` with a warning saying which two
+  columns are unaffected.
+
+* **`sigma_convergence()` returned a silent `NaN` for a year containing an
+  infinity**, through the same `!is.na()` filter that `beta_convergence()`
+  had: `Inf` passes both the `NA` test and `> 0`, so it reached
+  `sd(log(x))`. The filter now tests `is.finite()`, and the reported `n`
+  already says how many observations survived.
+
+* **An infinite base year made `index_to()` report a country as having
+  collapsed to zero.** The guard already returned `NA` for a base that was
+  missing, `NA` or `0`, but not for one that was infinite -- so every other
+  year of that country became `finite / Inf`, a plain and entirely plausible
+  `0`, while its neighbours indexed correctly. The guard now tests
+  `!is.finite()`, which covers `NA` and `NaN` exactly as before.
+
+* **An infinite value crashed `beta_convergence()` with a base R error.** The
+  filter kept observations that were `!is.na()` and `> 0`, and `Inf` passes
+  both, so an infinity reached `log()` and `lm()` died with *NA/NaN/Inf in
+  'x'* -- unclassed, naming nothing. `gini()` and `theil()` already treat an
+  infinity as unusable; the filter now tests `is.finite()`, dropping it
+  alongside the `NA` and non-positive values it already dropped.
+
+* **A character `year` broke the verbs that do arithmetic on it, each in a
+  different way.** `read.csv()` yields `"2000"` readily, and most verbs here
+  tolerate it because they only sort or group. The four that actually compute
+  with a year did not: `beta_convergence()` died with base R's *non-numeric
+  argument to binary operator*, `growth_rate(type = "cagr")` surfaced a dplyr
+  mutate error quoting an internal expression, and `deflate()` exposed its
+  internal join as *Can't join `x$year` with `y$year`*. All three now use the
+  same guard `complete_years()` already used, so the message names the column
+  and the conversion. `growth_rate(type = "yoy")` is unaffected -- it never
+  does year arithmetic -- and neither are `lag_by_country()`, `index_to()`,
+  `sigma_convergence()` or `convergence_club()`.
+
+* **`locate_country()` crashed on an `NA` coordinate and went quiet on an
+  out-of-range one.** A missing longitude or latitude -- what a failed
+  geocoding step produces all the time -- reached `sf::st_as_sf()` and came
+  back as base R's *missing values in coordinates not allowed*, an unclassed
+  error naming neither argument. Those rows now return `NA`, which is already
+  the documented way this function says "no country here", and the rest of the
+  points are located as usual. Separately, a longitude outside [-180, 180] or
+  a latitude outside [-90, 90] returned a silent `NA`, indistinguishable from
+  open ocean, so a column still in 0-360 degrees -- or with the two swapped --
+  looked like a world of water rather than a mistake; it is now a classed
+  error naming the offending pairs and the conversion.
+
+* **A gap in `year` made `lag_by_country()`, `diff_by_country()` and
+  `growth_rate(type = "yoy")` compare rows that are years apart, silently.**
+  These read the previous *row*, not the previous year, so on a panel of 2000,
+  2002 and 2005 the 2005 growth rate came back as 27.3% -- the change since
+  2002 -- in a column the docs call year-on-year and the argument calls
+  `"yoy"`. The arithmetic is unchanged, because a quinquennial panel is a
+  legitimate design and re-keying the lag would move everyone's results; but
+  the three verbs now warn and name the countries whose years are not
+  consecutive, pointing at `complete_years()`. `type = "cagr"` divides by the
+  real year span and so is silent, as before.
+
+* **`convergence_club()` died with a bare `simpleError` on a repeated
+  country-year.** `pivot_wider()` folds the repeat into a list-column and
+  `as.matrix()` then failed with base R's *invalid 'type' (list) of argument*,
+  naming neither the verb nor the offending rows. A repeat is fatal to the
+  log-t test rather than merely inaccurate, so it is now a classed error that
+  lists the country-years and points at `check_panel_unique()`.
+
+* **`theil()` returned `NaN` for both components when one group's weights
+  summed to zero.** `sw == 0` was guarded for the whole vector, but not per
+  group: the group mean `sum(w[i] * x[i]) / swg` was `0/0`, and the `NaN`
+  poisoned `between` and `within` while `total` came back a perfectly good
+  number -- with no warning to say which group did it. A group with no weight
+  has no share of the population, so its contribution to both components is
+  exactly zero, and the decomposition identity `total == between + within`
+  now holds in that case too.
+
+* **`interpolate_missing()` stripped a column's class when, and only when, the
+  series had a gap.** The fill went through `ifelse()`, which drops attributes,
+  so a `Date` column came back as bare numbers -- `2020-01-01` returned as
+  `18262`. A series with no `NA` took an early return that preserved the
+  column, so the same column changed type depending on its data. The fill now
+  assigns into a copy of the input, which keeps the class.
+
+* **Passing ISO codes to a verb that expects country names gave no usable
+  advice.** `origin` defaults to `"country.name"` throughout, so
+  `country_factsheet("FRA")` -- the canonical ISO3 code -- was refused and the
+  message suggested `check_country_match()`, which has nothing to say about a
+  code. When every unresolved value is a valid code under some other origin,
+  the message now names it: *It resolves under `origin = "iso3c"` -- try that
+  instead.* Applies to `country_factsheet()`, `neighbors()`,
+  `distance_between()` and the join verbs. A genuinely unknown name still gets
+  the close-name suggestion and no misleading hint.
+
+* **Accented country names written in NFD resolved to `NA`.** The same accent
+  can be encoded as one precomposed code point (NFC) or as a base letter
+  followed by a combining mark (NFD) -- identical on screen, different strings
+  to `match()`. countrycode's tables are NFC, so `"Turkiye"`, `"Sao Tome and
+  Principe"`, `"Aland Islands"`, `"Curacao"` and `"Reunion"` in their accented
+  NFD spellings matched nothing, silently, even in a UTF-8 locale -- which is
+  precisely where `?country_overrides` promises accented names do work. macOS
+  returns NFD for filenames and several export paths emit it, so this is input
+  a user gets without choosing it. `Cote d'Ivoire` was unaffected and hid the
+  problem: countrycode's regex for it keys on an ASCII substring that
+  decomposition leaves alone. Names that resolve to nothing are now retried
+  with their combining marks stripped, which turns an NFD spelling into the
+  ASCII spelling the package already documents as resolving in any locale.
+  Only the unresolved values are retried, so the pass can add a match but
+  never move one: across the 314 names the package and countrycode ship, none
+  changed.
+
+* The README said `common_indicators` "keeps the 20 you actually use" after
+  this release grew it to 22 with the two price-conversion series. Corrected,
+  and the count is now asserted against `nrow(common_indicators)` so the
+  prose cannot drift from the data again.
+
+* **The global `getis_ord(local = FALSE)` gave the same answer for a variable
+  and its negation.** The general G is a ratio of weighted to total
+  cross-products, so every `x_i * x_j` term survives negating the whole
+  variable: `g(x)` and `g(-x)` came back as bit-for-bit the same double, and
+  the statistic could not tell a coldspot pattern from a hotspot one. Getis &
+  Ord (1992) define it for a variable with a natural origin and no negative
+  values, and `gini()` -- the nearest analogue here, a global index with a
+  positivity domain -- already warns and returns `NA` in this case. The global
+  branch now does the same, naming how many values are negative, instead of
+  handing back a plausible-looking number computed outside its domain. Zero is
+  still allowed, positive columns are numerically unchanged, and the local
+  `Gi*` branch standardises and is untouched.
+
+* **`growth_rate(type = "cagr")` returned a bare `NaN` for a negative value,
+  silently.** The compound rate is `(v_t / v_0)^(1/n) - 1`, and the code
+  guarded `v_0 > 0` -- the base of the ratio -- but not `v_t`. A fractional
+  power of a negative ratio is `NaN`, so a single negative year in an
+  otherwise positive series put a `NaN` in the column with nothing said. Every
+  neighbouring measure reports this: `theil()` drops non-positive values and
+  says how many, `gini()` warns about negatives, `sigma_convergence()` warns
+  when no value is positive, `beta_convergence()` errors, and `growth_rate()`
+  itself warns when *every* row comes back `NA`. The partial case was the one
+  silent spot, and it is the case real data hits -- a deficit or a net flow
+  dipping below zero for a single year. Negative values now give `NA` with a
+  `countryatlas_cagr_negative` warning naming how many rows are affected. A
+  value of exactly `0` is unaffected and still gives `-1`, an annualised
+  -100%, which is the right answer for a series that went to nothing;
+  `type = "yoy"` is a plain ratio change, is defined for negatives, and is
+  untouched.
+
+* `index_to()` documents what it does when `base_year` is not in the data. A
+  country whose series does not cover the base year indexes to `NA` rather
+  than stopping the call, because the rebasing is per country and a partial
+  answer is still a real one -- so a `base_year` no row anywhere carries
+  (including any non-integer value, which no year can equal) gives an all-`NA`
+  column rather than an error. That was pinned by a test and explained in a
+  code comment, but nothing in `?index_to` said it, and the sibling
+  `deflate()` refuses such a year instead. Both behaviours are unchanged; the
+  contrast is now stated, with an example.
+
+* **A `units` value crashed the numeric guards.** `sf`'s `st_area()` and
+  `st_distance()` return units objects, so a threshold computed from geometry
+  and passed to a numeric argument is an easy mistake -- and `is.numeric()` is
+  TRUE for one, so it sailed through the type check. The *range comparison*
+  then raised the units package's own "both operands of the expression should
+  be units objects", naming neither the argument nor this package.
+  `check_number()` and `check_top_n()` now ask whether the comparison is
+  possible before making it, and say what to do: "`cutoff_km` must be a plain
+  number. Got <units> ... Drop the unit first, e.g. `as.numeric(cutoff_km)`."
+  A classed numeric that does compare, and a named scalar, are still accepted
+  as before.
+
+* **Three more arguments consumed a function before checking it.** A sibling
+  of the validator fix below, with a different mechanism: the value was used
+  before any check ran, so the crash came from the consuming call rather than
+  the message. `check_choice()` reached `as.character(x)` on its
+  default-detection line, which is how `world_map(projection = mean)` died;
+  `country_groups()` reached `setdiff(group, valid)`, which coerces (and a
+  formula got as far as "duplicated() applies only to vectors"); and
+  `complete_years()` called `anyNA(years)` *inside the condition* of the guard
+  meant to catch bad input, which errors outright on an environment. All three
+  now refuse a function or environment up front and name the class.
+
+* **Passing a function to a validated argument crashed the validator itself.**
+  `check_string()`, `check_bool()`, `check_number()` and `check_top_n()` build
+  their message with `{.val {x}}`, which coerces the value to character -- and
+  that fails outright for a closure, with base R's "cannot coerce type
+  'closure' to vector of type 'character'". The error path therefore crashed
+  instead of reporting the bad input, and every caller inherited it:
+  `register_country_source(mean, ...)`, `clear_country_cache(source = mean)`,
+  `as_ggsql_source(name = mean)` and `world_query(source = mean)` all gave a
+  bare `simpleError` from base R rather than naming the argument. `length()`
+  was no defence -- a closure has length 1, so the length branch never fired,
+  and `length(globalenv())` counts bindings, so an environment reported "Got 5
+  values". All four now name the class instead: "Got `<function>`". Ordinary
+  values, including the value itself and the wrong-length counts, are
+  unchanged.
+
+* **A numeric argument turned an "unknown name" error into a cli crash.**
+  Several messages put the pluralisation marker ahead of the value --
+  `"Unknown group{?s}: {.val {bad}}"`. With no quantity set, cli reaches for
+  the most recent interpolation to find one, and a *numeric* vector there is
+  read as the quantity itself, which must be length 1. So
+  `country_groups(c(1, 2))` died on cli's own "length(object) == 1 is not
+  TRUE" rather than reporting the bad input, and the same held for
+  `check_cols()`, `world_table(columns = )` and
+  `classify_compare(methods = )`. Character vectors were fine, which is why it
+  went unnoticed. The five affected messages now set the count with
+  `cli::qty(length(x))`, the form `reporting.R` already used. Note `qty(x)`
+  alone is not enough for a numeric `x` -- it hits the same trap. Singular and
+  plural now read correctly for both types, and character messages are
+  unchanged.
+
+* **The spherical-area helper mis-measured rings at the antimeridian.**
+  `ring_area_km2()` picks a country's largest polygon piece so the label lands
+  on the mainland rather than in an ocean. Longitudes arrive wrapped into
+  `[-180, 180)`, so a raw edge difference jumps by ~360 degrees at the
+  antimeridian, and the two failure modes pointed opposite ways: a ring
+  *crossing* 180 measured 179 times too large (a 2-degree equatorial square
+  came out at 8.85e6 km2 instead of 49447), while one *encircling* the pole
+  cancelled to about zero (a cap at latitude -80 measured 7e-11 instead of
+  3.87e6). Either can hand the "largest piece" choice to the wrong ring --
+  exactly the mislabelling the helper exists to prevent. Edges are now
+  differenced modulo 360, which agrees with the analytic area for an
+  equatorial square, a wrapped square and a polar cap alike. No centroid
+  changes: the bundled polygon data splits pieces at the antimeridian, so all
+  239 still match `country_meta`. The point is that the result no longer
+  depends on the data being split that way.
+
+* **`tissot_map()` failed for many ordinary radii.** Its circles are built by
+  walking out along azimuths `0..2*pi` and wrapping longitude into
+  `[-180, 180)`. `az = 0` and `az = 2*pi` are the same point, but the wrap
+  could send the two ends to `-180` and `+180` -- the same meridian, opposite
+  signs -- so `st_polygon()` saw an unclosed ring and sf reported "polygons
+  not (all) closed", a bare `simpleError` naming neither the argument nor the
+  function. Whether it happened depended on the radius, and the default hid
+  it: at `radius_km = 500` no centre in the grid produced such a ring, at
+  `1000` six did and at `5000` fifteen. The failures were not monotonic --
+  `500` and `10000` worked while `1000`, `2000`, `5000`, `8000`, `12000` and
+  `20000` did not. The ring is now closed by construction rather than relying
+  on the arithmetic to reproduce its first vertex, and every radius from 100
+  to 40000 km draws. The antimeridian guard is unchanged, so a larger radius
+  still drops the circles that would smear across the map.
+
+* **An enormous `k` in `dorling_map()` surfaced a GEOS exception.** `k` was
+  bounded below but not above. `check_number()` already refuses `Inf`, so
+  `k = Inf` errored cleanly, but a merely enormous finite value passed and
+  then overflowed the coordinate arithmetic inside GEOS, which reported an
+  illegal-argument exception about encountering non-finite numbers in an
+  orientation test -- a bare `simpleError` from a C++ library, naming neither
+  `k` nor the function. It is now capped at `.Machine$integer.max`, the bound
+  the counting arguments elsewhere use, so the refusal comes from the package
+  and names the argument. Realistic values are unaffected: `k = 1e6` still
+  draws.
+
+* **`top_n` past integer range leaked a base R error.** `Inf` is the
+  documented "no limit", and `world_table()` and `country_network()` both gate
+  on `is.finite(top_n)` to detect it -- so a *finite* value beyond integer
+  range passed the gate and then broke on the coercion behind it.
+  `as.integer(1e18)` is `NA`, so `utils::head(df, NA)` surfaced base R's
+  "invalid 'n' - must contain at least one non-missing element, got none": a
+  bare `simpleError` naming neither `top_n` nor the package. Asking for at
+  most `1e18` rows of a 191-row table is the same request as `Inf`, so it is
+  now normalised to `Inf` rather than rejected. Representable limits are
+  unchanged, `.Machine$integer.max` still works, and `0` / negatives / `NA` /
+  non-numeric are still refused with a `countryatlas_error`. Found by fuzzing
+  argument values, looking for errors the package had not classified.
+
+* The two hand-curated datasets are pinned to the scripts that build them.
+  `country_groups_history` and `disputed_territories` are maintained by hand
+  in `data-raw/`, so the script is the source of truth and drift can happen in
+  either direction -- editing the `.rda` without the script, or the script
+  without rebuilding. Both are now re-run during the tests and compared to the
+  shipped data, the same guard `data-raw/overrides_snapshot.R` already had.
+  Both reproduce byte for byte today.
+
+* `interpolate_missing()` no longer carries a second, unreachable
+  duplicate-column guard. `check_panel_unique()` grew one of its own earlier
+  in this cycle, and it runs five lines earlier, so the copy inside
+  `interpolate_missing()` could never fire -- its stale comment still claimed
+  the function "did not" reject duplicate names. Line coverage showed the
+  block never executing. The rejection itself is unchanged, still raising
+  `countryatlas_duplicate_columns`, and is now covered by a test.
+
+* `audit_time_coverage()`'s three console messages are covered by tests. None
+  of those lines had ever executed, which meant the pluralisation in
+  "{n} row{?s} fall{?s/} outside the country's existence" had never been
+  checked at both counts -- and `{?s}` keys to the most recently interpolated
+  value, a construct this package has got wrong before. Both readings are
+  correct ("1 row falls", "2 rows fall") and are now pinned, along with the
+  no-findings message and the empty-input column contract.
+
+* **`rate_check()` reported "no countries flagged" when it meant "unknown".**
+  When no small-denominator threshold can be computed it warns that `flagged`
+  is `NA` throughout -- but `is.finite(den) & den < thr` yields `FALSE`, not
+  `NA`, for a non-finite denominator, because R short-circuits `FALSE & NA` to
+  `FALSE`. An all-`NA` denominator therefore produced `FALSE` for every row,
+  so `sum(out$flagged)` returned `0`: a confident "nothing is flagged", which
+  is precisely the misreading the warning was written to prevent. An all-zero
+  or all-negative denominator did yield `NA`, so the cases disagreed with each
+  other as well as with the message. With no threshold, no row can be compared
+  to one, so `flagged` is now `NA` for every row and the warning fires exactly
+  when that is true. The normal path is unchanged, including its `FALSE` for a
+  missing denominator among usable ones, which keeps `sum(out$flagged)`
+  working as intended.
+
+* **`getis_ord()` computed its spread with the unstable one-pass formula, so
+  a tightly clustered column produced `Inf` or `NaN` z-scores.** The spread
+  was `sqrt(sum(x^2)/n - mean(x)^2)`, which subtracts two nearly equal large
+  numbers and loses every significant digit once the mean dwarfs the
+  variation. Measured on 8-country vectors: `1e9 + 1:8` drove the spread to
+  exactly `0`, so the denominator was `0` and every `z_score` came back `Inf`
+  with `p_value` `0` -- reading as "every country is a significant hotspot";
+  `1e10 + 1:8` gave a spread 90 times too large, so nothing was ever
+  significant; and `1e12 + 10 * 1:8` went negative under the `sqrt`, returning
+  `NaN` z-scores and leaking base R's warning about them. The
+  zero-variance guard caught none of it, because such a column is not
+  constant, only nearly so. Centring before squaring is algebraically the same
+  quantity and unconditionally stable, and it is how `local_morans()` already
+  computed its second moment. Well-conditioned columns are unaffected to
+  floating-point noise. Gi* z-scores are shift and scale invariant by
+  construction, which is what the old form violated, so that invariant is now
+  asserted rather than any particular number.
+
+* **A trailing space on `region` silently drew an empty map.**
+  `resolve_region()` trimmed in its `iso3c` branch and nowhere else, so one
+  trailing space gave three different answers: `"FRA "` resolved, `"Europe "`
+  fell through to country-name matching and errored, and `"EU "` was accepted
+  as a three-letter code -- `nchar("EU ")` is 3 and it is already uppercase,
+  so it reached the branch that passes an unrecognised code through untouched
+  and came back as the literal string `"EU "`. Every public caller of that
+  helper -- `world_geometry()`, `world_data()`, `attach_geometry()`,
+  `join_world()` and `country_borders()` -- therefore subset to nothing and
+  reported nothing, which is the outcome that branch exists to prevent. Every branch now reads the same trimmed value, so
+  all 15 shipped groups, the continents, codes and names agree across padding.
+  The error message still quotes the caller's value untrimmed.
+
+* **Padding was tolerated for a code but not for an overridden spelling, and
+  a non-breaking space defeated the trim entirely.** `trimws()`'s default
+  class is `[ \t\r\n]`, so the `iso3c` branch's deliberate trim missed every
+  non-ASCII space -- `"FRA "` resolved and `"FRA\u00a0"`, what a code pasted
+  from a web table or a Word document carries, did not. Separately the
+  override lookup keyed on the raw value while the whitelist was built from
+  the trimmed one, so with `custom_match = c(Somaliland = "SOM")`,
+  `"Somaliland"` gave `SOM` and `"Somaliland "` gave `NA`; an ordinary
+  trailing space was enough. Both now use one Unicode-aware trim. A BOM or a
+  zero-width space is a format character rather than whitespace and is still
+  rejected rather than silently accepted.
+
+* **`top_n` went unvalidated in `world_table()` and `country_network()`.**
+  `Inf` is the documented "no limit", which `check_number()` rejects, so the
+  guard was a bare `is.finite()` -- and everything `is.finite()` rejects then
+  skipped validation altogether. `top_n = "5"` and `top_n = NA` silently
+  returned every row instead of five, and `top_n = NULL` failed on `if` with R's
+  "argument is of length zero". Both now validate up front and still take `Inf`.
+* **`world_table(subtitle = )` was dropped unless a `title` came with it.** gt
+  draws the subtitle inside the header block that a title opens, so a lone
+  subtitle had nowhere to go; it now says so instead of vanishing.
+* **`value_by_alpha_map()` drew a half-lit map when opacity meant nothing.**
+  The alpha scale had no `limits`, so it rescaled to whatever spread the frame
+  happened to have; an `equalize` column with nothing usable collapsed to one
+  value and ggplot2 placed it at the *midpoint* of `alpha_range`. The result
+  read as "every country equally weighted" -- the one impression this verb
+  exists to prevent. Opacity is now absolute (`limits = c(0, 1)`), so a frame
+  with no usable equalising variable is drawn at the floor and says so, and two
+  maps of different subsets are comparable.
+* **`rate_check()` returned an all-`NA` `flagged` column in silence.** With no
+  positive finite denominator anywhere, the tenth-percentile threshold is `NA`
+  and every comparison against it is `NA` too -- so `sum(out$flagged)`, the
+  obvious next step, came back `NA` rather than a count. It now says why.
+* **`deflate()` returned an all-`NA` country without saying why.** A country
+  with no usable deflator in `base_year` has nothing to rebase against, so every
+  one of its values is `NA` -- correct arithmetic, but in the output
+  indistinguishable from a country the source never covered. It now names them
+  and suggests a base year the panel actually spans.
+* **`od_map()` dropped a named origin without saying so.** A country that
+  appears in the OD table only as a destination has no outflow to draw, so it
+  was filtered out -- silently, leaving the caller to notice that they asked for
+  four panels and got three. Named origins now warn (and point at
+  `direction = "in"`); trimming the `origins = <n>` top-N list stays quiet,
+  which is what top-N means.
+* **`distance_between()` returned a silent `NA` for a name that is not a
+  country.** Two causes produce an `NA` distance and only one is the documented
+  gap: a country with no bundled centroid is expected -- `?distance_between`
+  says so, and `country_weights()` already reports it -- while a value that
+  resolves to no country at all is a mistake, usually the wrong `origin`, and
+  handed back a column of `NA` with nothing said. The second is now reported,
+  naming the values and the `origin` in force; the documented gap stays quiet.
+* **`simplify_geometry()` and `theme_world_map()` never validated their first
+  argument.** Both check their *second* one carefully.
+  `simplify_geometry()` handed a non-spatial object straight to rmapshaper,
+  leaking "no applicable method for 'ms_simplify' applied to an object of class
+  NULL" -- rmapshaper's generic rather than the argument -- and failed
+  differently again through the `sf::st_simplify()` fallback, so the message
+  depended on which optional package the caller happened to have.
+  `theme_world_map()` got base R's bare "non-numeric argument to binary
+  operator". Found by calling all 102 exports with degenerate input and
+  classifying which errors were the package's own.
+* **Three verbs joined on an unstandardised key and said nothing.** Lowercase,
+  mixed-case and padded `iso3c` values match nothing, so `attach_geometry()`
+  drew every country as no-data, `tile_map()` drew every tile grey, and
+  `add_indicator()` attached a column of pure `NA` -- each of which reads as a
+  coverage problem, or as the provider having no data, rather than as a key
+  problem. An *unmatched* code stays quiet, because the basemap genuinely holds
+  fewer countries than the snapshot; matching *nothing* now says so and points
+  at `standardize_country()`, which normalises case and whitespace.
+  `attach_geometry(year = )` already reported its match rate; the ordinary
+  branches did not.
+* **`complete_years()` also leaked one on a *missing* `year`.** It infers the
+  span with `seq(min(year), max(year))`, so a single `NA` produced base R's
+  "'from' must be a finite number", naming neither the column nor the package.
+  The `years` argument has been checked for `NA` all along; the column it
+  defaults from had not, and one blank cell in a CSV is enough to hit it.
+* **`complete_years()` leaked an internal error on a non-numeric `year`.** Its
+  `years` *argument* was checked carefully but the `year` *column* was not, so a
+  character one surfaced as dplyr's "Can't join `x$year` with `y$year` due to
+  incompatible types" -- naming dplyr's internals rather than the column -- and
+  a factor got base R's bare "'min' not meaningful for factors". Both come
+  straight out of a CSV read.
+* **`country_factsheet()` printed `NA` as the country name** for any code with
+  no `country_meta` row. The fallback was `first_or_na(row$country) %||% iso`,
+  but `%||%` only replaces `NULL` and `first_or_na()` returns `NA_character_`,
+  so it never fired: `country_factsheet("Kosovo")` headed its output
+  `NA (XKX)` while listing four real land neighbours underneath. It now falls
+  back to the name the caller used.
+* **`country_meta` had five blank capitals alongside 34 `NA`s.**
+  `WDI_data` uses `""` for an unknown capital and it passed through
+  unchanged, so `is.na(capital)` was wrong for Gibraltar, Hong Kong, Israel,
+  Macao and the Palestinian Territories, and the factsheet printed
+  `capital: ` with nothing after it. Blank strings are now `NA`, in the
+  dataset and in the script that builds it.
+* **`Suggests: testthat` understated its minimum.** The suite has used
+  `expect_no_error()` (testthat 3.1.5) for some time and now uses
+  `expect_no_match()` (3.2.0), while `DESCRIPTION` still asked only for 3.0.0.
+  Bumped to `>= 3.2.0`.
+* **`rank_countries()` and `share_of_world()` said nothing about a repeated
+  country-year.** `interpolate_missing()` and `complete_years()` already report
+  that shape, but the two verbs that *aggregate across* rows did not -- and
+  their output is the harder to reconcile. Given a frame with `USA`-2020
+  duplicated, `rank_countries()` returned the same country holding ranks 1
+  **and** 3, and `share_of_world()` gave it shares of 0.1 and 0.7 against a
+  world total that counted it twice. Both now report it, each naming its own
+  consequence rather than the lag family's.
+* **Four numeric-column verbs did not check that the column was numeric.**
+  `country_network()` validates its `weight` with `check_numeric_col()`; the
+  verbs shaped like it did not. `bubble_map()` and `flow_map()` reached
+  ggplot2's bare `Discrete value supplied to a continuous scale`, and only at
+  *build* time -- so the call returned happily and the failure surfaced when
+  the plot was printed, naming neither the argument nor the column.
+  `spike_map()` blamed the join (`No rows with a non-negative <col> joined to a
+  centroid`) and `convergence_club()` blamed the panel (`Not enough countries
+  with a complete series`), when in both cases the column simply was not a
+  number. All four now refuse at the call, naming the column.
+* **`fetch_indicator()` trusted a registered source's `key_col` claim.** When
+  a source declared `key_col = "iso3c"` its codes were used verbatim, but the
+  declaration is the source's claim rather than a guarantee -- and this is the
+  package's public extension point. Lowercase codes (`"usa"`) passed through
+  unchanged, a factor stayed a factor, and numeric UN M49 codes (`840`) sailed
+  through as numbers, each producing rows that silently joined to nothing and
+  read as "the provider has no data". The key is now standardised whatever the
+  source claims (a no-op on codes that are already right), and values that are
+  not usable as the declared key become `NA` *and* are named
+  (`countryatlas_bad_key`).
+* **A factor value column was read as its level indices.** `adapter_reshape()`
+  coerced the provider's value column with `as.numeric()`, which on a factor
+  returns level *indices*: a column of `factor("10", "20")` became `1, 2`.
+  `check_numeric_col()` rejects a factor outright with precisely this advice
+  (`as.numeric(as.character(x))`), and its comment notes how easily such a
+  column happens -- but the adapters take theirs from a third party, so they
+  cannot reject it and must not misread it either.
+* **Every source path misread the provider's time column.** `...` forwards to the client, so the caller chooses its type:
+  eurostat's `time_format = "num"` returns a numeric year and `"raw"` a
+  character one, while the default is a `Date`. Each adapter assumed one shape.
+  `fetch_eurostat()` failed on the other two with base R's opaque
+  `invalid 'trim' argument` -- `format()` reading `"%Y"` as its `trim`
+  argument. `fetch_oecd()` was worse, failing *silently*: `as.integer()` on a
+  `Date` returned **18262**, the day count, as the year, and a quarterly
+  `"2020-Q1"` became `NA`. Both now read the year from a date, a number, or a
+  string leading with one, and say so when a value is not a year at all.
+
+  The same bare `as.integer()` reached six sites, not two: `fetch_comtrade()`,
+  whose `period` is `YYYYMM` for monthly data (so `"202001"` became the year
+  202001); `adapter_reshape()` itself, which `fetch_owid()` reaches without
+  preprocessing; and `fetch_indicator()` -- the *public extension point*, where
+  the year is whatever a third-party fetch function returned. All six now share
+  one reader.
+
+  Two more sites outside the adapters took a year from the caller and read it
+  the same wrong way. `audit_time_coverage()` turned a `Date` year column into
+  day counts (`1990-01-01` -> 7305) and then flagged *both* USSR rows as
+  post-dissolution -- silently wrong output from the one verb whose job is
+  catching that class of mistake. And `deflate()` reported a `Date` `base_year`
+  back as `` `base_year` 11323 is not in year ``, a number the caller never
+  supplied; it now accepts a date, a number or a string, and names what it was
+  actually given when it cannot.
+* **The source adapters returned an empty frame in silence when no entity
+  resolved.** `adapter_reshape()` resolves the provider's entity column with
+  `suppressWarnings()` on purpose -- every Our World in Data or Eurostat
+  response carries aggregate rows like `"World"` and `"EU27"` that are not
+  countries and never resolve -- but that also swallowed a provider renaming
+  its entities, or the wrong column being named. The result was zero rows and
+  no explanation, sending the reader to check their own indicator code, while
+  the same function takes care to explain an empty *input* a few lines earlier.
+  Nothing resolving at all now aborts (`countryatlas_no_entities`), naming the
+  entities it could not match. An empty result from the `countries`/`years`
+  filters is unaffected -- those entities did resolve.
+* **`bivariate_map()` leaked `classInt`'s "single unique value"** for a column
+  with no variation. `classInt` needs two distinct values per axis to cut
+  classes from, and a constant column reached it as a bare `simpleError` from a
+  third-party package, naming neither the column nor the function nor anything
+  to do about it. Both axes are now checked, naming the column and its distinct
+  count.
+* **`tile_map()` overstated its coverage**, the same way `bubble_map()` and
+  `spike_map()` did. The bundled equal-area grid does not cover every code --
+  Hong Kong and Macao have snapshot data and no tile -- so counting the input's
+  coded countries as shown claimed 191 where the map could draw 189. Coverage
+  is now measured against what the grid can actually place, and the
+  `countryatlas_no_centroid` warning names the countries it cannot.
+* **`per_capita()` returned `Inf` for a zero population, silently.**
+  `deflate()` and `to_ppp()` were fixed for precisely this -- there is a test
+  named *"an unusable deflator or PPP factor gives NA, not Inf"* whose comment
+  records that `Inf` "propagated silently into every scale and summary
+  downstream" -- but the most used function of the family never got the fix. A
+  zero or missing population now yields `NA` and says so, matching its
+  siblings. A *negative* population still passes through unchanged and
+  silently, because that is pinned deliberately elsewhere in the suite --
+  negative values are the caller's business and the arithmetic stays honest.
+* **`country_weights()` built an edgeless graph without comment.**
+  `country_weights("distance", cutoff_km = 1)` returned 239 countries and zero
+  links, as did an all-zero custom matrix. Every statistic then refused to run
+  with `Not enough connected countries with data` -- an error about the *data*,
+  raised far from the `cutoff_km` or matrix that actually caused it. Building
+  weights that link nothing now warns (`countryatlas_empty_weights`), naming
+  the cause specific to the scheme.
+* **`smooth_rates()` and `to_ppp()` returned all-`NA` columns in silence** --
+  the same bug `rate_check()` already had fixed, kept by its two siblings. With
+  no finite positive denominator every rate is `NA` and the smoothed column
+  with it; with no finite positive conversion factor every converted value is
+  `NA`. Correct arithmetic either way, but the output looked like a computation
+  that had run rather than one with nothing to run on. Both now say so, and
+  report a partial loss with a count.
+* **`country_weights("custom")` validated only the row and column names**, so
+  bad input leaked a bare base-R error from deep downstream instead of being
+  refused where the caller could act. A character matrix reached `rowSums()` as
+  `'x' must be numeric`; an `NA` entry was *accepted*, then killed any statistic
+  built on it with `subscript out of bounds`; an `NA` endpoint in a long frame
+  surfaced as `NAs are not allowed in subscripted assignments`; and an `NA`
+  weight was accepted outright, silently turning every result into `NA`. All
+  four are now refused at construction, naming the argument and the count.
+  Numeric and logical matrices and long frames are unaffected -- and this is the
+  path `vignette("honest-maps")` recommends for a non-geographic adjacency
+  (trade volume, migration, shared language).
+* **One `dplyr::filter()` referenced its columns bare.** The bounding-box
+  branch of `world_geometry(geometry = "polygon")` filtered on `long`/`lat`
+  rather than `.data$long`/`.data$lat` -- the only such site against twenty
+  `.data$` uses elsewhere. A bare reference falls back to a variable of that
+  name in the calling scope when the column is absent, so it can filter on the
+  wrong thing where `.data$` errors plainly. With it converted,
+  `utils::globalVariables()` no longer needs to declare `long` and `lat`;
+  only `animate_world()`'s NSE default `time = year` remains.
+* **`spin_globe()`'s example was never executed by anything.** It sat in
+  `\dontrun{}`, which `R CMD check` skips even under `--run-donttest`, so the
+  one example of the GIF pipeline was free to rot unnoticed. It needs no
+  network -- only bundled data and `gifski`/`magick` -- so it is now
+  `\donttest{}`, guarded on those packages and cut to six frames, which runs
+  in about five seconds and is checked from here on.
+* **`as_ggsql_source(format = "duckdb")` did not say who owns the connection
+  it returns.** duckdb keeps its in-memory database alive until the handle is
+  released, and neither `@return` nor `@param format` told the caller to close
+  it -- while the `"parquet"` branch quietly closed the connection it opened.
+  `?as_ggsql_source` now spells out all three lifecycles, and a connection the
+  function opened itself is released if the write throws, so a failure cannot
+  leave a handle nobody holds.
+* **`sigma_convergence()` returned an empty or blank series in silence.** Its
+  positive-value filter is documented -- `n` counts what survived -- but two of
+  its outcomes were not. A column with no positive values came back as a 0-row
+  tibble, and a year with a single country got `sigma = NA` from `sd()`, so an
+  empty or blank convergence series was indistinguishable from a real one. Both
+  now warn (`countryatlas_no_positive`, `countryatlas_thin_year`), the latter
+  naming the years affected. An ordinary panel is unchanged and silent.
+* **`gini()` and `theil()` returned `NA` without saying why.** Both carried a
+  comment stating the package convention -- "NA plus a word about why (as for
+  zero weights)" -- while the line beneath returned `NA` in silence for exactly
+  those cases. An all-zero column and all-zero weights were indistinguishable
+  from a missing input. Both now warn (`countryatlas_undefined_index`) naming
+  which it was. Perfect equality still returns `0`, silently, because that is
+  a value and not an undefined one.
+* **A constant column made the spatial statistics return `NaN` in silence.**
+  `morans_i()`, `gearys_c()`, `local_morans()` and `getis_ord()` all divide by
+  the cross-sectional variance, so a column with no variation between countries
+  is 0/0 -- and `getis_ord()`'s z-score came back `Inf` where the numerator was
+  non-zero. For a statistic that is worse than an error, because it reads like
+  a computed result. All four now warn
+  (`countryatlas_zero_variance`), explaining that these measures compare
+  variation between neighbours and there is none, and return `NA` rather than
+  `NaN`. An all-zero column also stops `getis_ord()` dividing `gi_star` by its
+  own zero sum. Real data is unaffected.
+* **`map_provenance()` gained `n_total`.** `n_countries` holds the countries
+  actually drawn *with a value* -- the numerator -- but the name reads like the
+  map's country total, which is `n_countries + n_missing`. Anyone taking it as
+  the denominator understated their own coverage. The denominator is now a
+  field of its own, and the three counts are spelled out in `?map_provenance`.
+* **The coverage caption did not pluralise.** `footnote = "auto"` is built
+  with `sprintf()` and lands on a published map, where a single-country frame
+  read `All 1 countries shown.` and an empty one `All 0 countries shown.` The
+  same noun appears in `coverage_map()`'s caption and `map_provenance()`'s
+  print block. All three now agree with the count, an empty frame says
+  `No countries to show.`, and a frame with no coverage to report gets no
+  caption rather than one full of `NA`.
+* **`spatial_lag()` gave every year of a panel the first year's neighbour
+  average.** It is the one spatial verb that returns a column aligned to the
+  caller's own rows, and it matched on `iso3c` alone. France's
+  `gdp_per_capita` ran 39,683 -> 158,734 -> 277,784 across three years while
+  `gdp_per_capita_lag` sat at 63,409 for all of them, so `value / lag` --
+  the Moran-scatterplot axis this column exists for -- silently compared 2002
+  against 2000. A panel now gets a lag computed per year; a cross-section is
+  unchanged.
+* **The spatial statistics silently computed on an arbitrary year of a
+  panel.** `align_weights()` -- shared by `morans_i()`, `gearys_c()`,
+  `getis_ord()`, `local_morans()`, `spatial_lag()` and `lisa_map()` -- reduced
+  to one row per country with a bare `distinct(iso3c, .keep_all = TRUE)`, so a
+  panel collapsed to whichever row came first in the frame. Moran's I on the
+  same data returned 0.47 or 0.29 depending only on row order, and unlike the
+  map verbs these said nothing at all about having chosen. They now go through
+  the shared reduction: the earliest year, deterministically, with the
+  `countryatlas_panel` warning. A genuine cross-section is unaffected.
+* **"Only the earliest year of each country is used" was not true.** The
+  one-row-per-country reduction behind `rate_check()`, `audit_coverage()`,
+  `correlate_indicators()`, `world_table()` and every map verb warned that it
+  keeps the earliest year, but the code was
+  `distinct(iso3c, .keep_all = TRUE)`, which keeps whichever row comes *first
+  in the frame*. That is the earliest year only for a caller who happened to
+  sort by year: shuffle the same panel and `rate_check()` returned a different
+  numerator for France (20 sorted, 30 shuffled) and the map verbs drew a
+  different year, while the warning went on promising "earliest" either way.
+  The earliest year is now selected explicitly, so these verbs are
+  reproducible for a given frame regardless of row order, and the survivors
+  keep their original relative order.
+* **`standardize_country()` silently destroyed columns the caller never asked
+  about.** `add` defaults to `c("iso3c", "iso2c", "continent", "region")`, so
+  the ordinary call -- `standardize_country(d, country)`, to get `iso3c` --
+  also replaced any `continent`, `region` or `iso2c` already in the frame. A
+  user's own regional classification vanished without a word, while the eleven
+  other column-adding verbs all report this through `warn_overwrite()`. It now
+  warns (`countryatlas_unasked_overwrite`) naming the columns, *only* when
+  `add` was left at its default: passing `add` yourself still means you asked
+  for those columns, as documented. `add = "iso3c"` adds just the code.
+* **`country_join()` silently multiplied rows when standardising collapsed two
+  names onto one code.** `wdj_to_key()` maps distinct inputs to the same code --
+  `"France"` and `"FRANCE "`, or `"Congo"` and `"Congo-Kinshasa"` -- so a `y`
+  whose names all looked distinct could join one country twice. dplyr says
+  nothing: with unique keys on the other side that is an ordinary one-to-many,
+  not the many-to-many it flags. Two rows became three, France appeared twice
+  with different values, and a downstream `sum()` double-counted it. Both
+  `country_join()` and `country_join_all()` now warn
+  (`countryatlas_key_collapse`), naming the code and the inputs that collapsed
+  onto it. Only a *collapse* is reported: duplicates already present in the
+  input under one name, and country-by-year panels, are legitimate one-to-many
+  joins and stay silent. `warn = FALSE` silences it.
+* **Subnational maps counted countries instead of regions, and binned on
+  them too.** `na_coverage()`, `classification_table()`, `apply_binned_fill()`
+  and `imputed_count()` de-duplicate before counting -- the polygon backend
+  repeats a country's value down every vertex -- but keyed on `iso3c`. A
+  subnational frame carries `iso3c` *as well as* a region code, so every NUTS
+  region of a country collapsed to one row: a 280-region map reported
+  "27 of 27"; because `distinct()` keeps the first row per key, blank regions
+  inside a country whose first region had data were reported as **zero
+  missing**, claiming complete coverage of a map with visible holes; and the
+  quantile breaks were computed from 27 values rather than 280, so the colour
+  scale itself was wrong. All four now key on the most specific unit column
+  present (`nuts_id`, then `iso_3166_2`, then `iso3c`, then `group`).
+* **`country_borders()` silently omits five whole countries at its default
+  scale, and `country_factsheet()` reported the resulting short count as
+  fact.** Adjacency comes from Natural Earth, and the default `scale = "small"`
+  (110m) has no polygon at all for Andorra, Liechtenstein, Monaco, San Marino
+  or the Vatican -- countries for which a land border is the entire geography.
+  They contributed no rows, so each reported zero neighbours and France
+  reported 8 instead of 10, under a heading stating the count as fact.
+  `?country_borders` now has a *Which countries the default leaves out*
+  section naming them and pointing at `scale = "medium"` (which has all five),
+  and `country_factsheet()` names what its count excludes -- only for the
+  countries actually affected. (The Brazil and Suriname borders it reports for
+  France are real, via French Guiana.)
+* **Passing something that is not a column to a column argument leaked a raw
+  rlang error.** `quo_arg_name()` called `rlang::as_name()` directly, so
+  `world_map(data, 5)` failed with `Can't convert a double vector to a string.`
+  and `world_map(data, gdp_per_capita + 1)` -- a natural thing to try -- with
+  `Can't convert a call to a string.` Neither named the argument, the function,
+  or what was expected, and the leak reached every one of the package's ~66
+  unquoted column arguments. The error now names the argument and the offending
+  expression, and suggests the fix: compute the column first for an expression,
+  drop the pronoun for `.data$x`, or pass a bare name or string for a literal.
+* **`world_table(value = NULL)` labelled an unsorted slice with a `rank`
+  column.** With nothing to rank on, the frame keeps whatever order it arrived
+  in and `top_n` takes an arbitrary slice -- but the result was still numbered
+  1..n under a heading that told the reader these were the top n by something.
+  `world_table(world_snapshot$countries, top_n = 5)` presented Afghanistan as
+  "rank 1" next to an empty GDP cell. The column is now added only when a
+  `value` was given, and truncating an unsorted table warns.
+* **A failed World Bank download was cached to disk as if it had succeeded.**
+  `WDI::WDI()` answers a failed request by warning and returning a zero-row
+  frame; memoise cached that, and the World Bank cache is persistent -- so one
+  call made while the network was down poisoned every later session until
+  someone ran `clear_wdi_cache(disk = TRUE)` by hand. An empty response is now
+  never cached, and says why (`countryatlas_no_data`).
+* **`register_country_source(cache = )` did nothing.** The flag was stored in
+  the registry and reported by `country_sources()`, but nothing ever read it:
+  the documented per-session memoisation never happened, and `cache = FALSE`
+  was equally inert. Results are now memoised per source, keyed on the
+  indicator, countries, years and any extra arguments, and cleared by
+  `clear_country_cache(source = )`. Empty results are not memoised.
+* **`world_map(engine = "tmap")` could not draw in its default style.**
+  `tm_scale_intervals()` is tmap's *interval* scale, and `"cont"`/`"cat"` are
+  not interval styles -- they name different constructors. So the default
+  `style = "continuous"` failed outright with tmap's `Invalid style. Style
+  should be one of "fixed", "sd", "equal", "pretty", ...`, and
+  `style = "categorical"` warned that an interval scale was being applied to
+  non-numeric data. Each style now reaches the constructor tmap has for it.
+* **`flow_map()` drew every trans-Pacific flow across the whole map.** A great
+  circle Tokyo -> Los Angeles has longitudes running `...178, 179, -179,
+  -178...`, and `geom_path()` under `coord_quickmap()` joined those two points
+  literally, so the arc streaked back across Africa instead of crossing the
+  ocean. Arcs are now split at the antimeridian and land exactly on the edge.
+* **`flow_map()` titled its legends `weight`** whatever the caller's weight
+  column was called, because the internal arc frame's column is literally named
+  `weight`. Both scales now carry the real name -- which also merges what were
+  two legends of the same variable into one.
+* **`geom_country_labels(mapping = )` could only name four columns, and
+  cancelled `flag = TRUE`.** The centroid reduction returned
+  `iso3c`/`long`/`lat`/`flag` and dropped the rest, so
+  `aes(colour = continent)` -- the ordinary reason to pass a mapping -- died on
+  "object 'continent' not found". Separately, the caller's mapping *replaced*
+  the defaults instead of adding to them, so supplying one removed the `label`
+  aesthetic entirely and silently ignored `flag`.
+* **`animate_world(title = )` was discarded.** The frame marker was written
+  straight into `title`, overwriting anything passed through `...` to
+  `world_map()`. The title now stays and the frame label moves to the subtitle.
+* **`style = "binned"` ignored `n_bins`.** It was passed to ggplot2 as
+  `n.breaks`, which is only a hint -- `scales::extended_breaks()` snaps to round
+  numbers -- so `n_bins = 5`, `6` and `7` all drew five bins and `3` drew four.
+  `world_map()`, `globe_map()` and `value_by_alpha_map()` now compute explicit
+  equal-interval boundaries, so `n_bins` means the same thing under `"binned"`,
+  `"quantile"` and `"jenks"` as documented -- and in every verb that takes it,
+  not just `world_map()`. `globe_map()` and `value_by_alpha_map()` also record
+  the boundaries in provenance, which only `world_map()` did before.
+* **`classification_report = TRUE` fabricated classes for continuous fills.**
+  With no break vector the report fell back to one row per distinct *value*: a
+  continuous choropleth of GDP per capita produced a 189-row table of `n = 1`
+  that looked like a classification and described nothing. A continuous
+  colourbar now reports `NULL` and warns (`countryatlas_no_classes`); `"binned"`
+  gets a real table, because it now has real breaks.
+* **`bubble_map()` and `spike_map()` failed on data already carrying
+  `centroid_lon`/`centroid_lat`** -- including `world_geometry("centroids")`'s
+  own output. dplyr suffixed both sides of the join to `.x`/`.y` and the `aes()`
+  referring to `centroid_lon` then found no such column. The incoming columns
+  are dropped in favour of the bundled ones.
+* **`bubble_map()` and `spike_map()` overstated their coverage.** Both join the
+  bundled centroid table, which does not cover every code in the codelist. The
+  five countries with snapshot data and no centroid -- Hong Kong, Macao,
+  Gibraltar, the British Virgin Islands and Tuvalu -- were dropped at draw time
+  (`bubble_map()` left-joined and let ggplot2 mutter "Removed 5 rows";
+  `spike_map()` inner-joined and said nothing), but provenance was computed on
+  the frame as it arrived. A population map that never drew Hong Kong reported
+  "215 of 215" with `n_missing = 0`. Coverage is now measured against what is
+  actually placed, and a new `countryatlas_no_centroid` warning names the
+  countries that could not be.
+* **`na_style = "hatched"` and `disputes = "mark"` silently discarded the
+  projection.** `ggpattern::geom_sf_pattern()` and the `geom_sf()` inside the
+  dispute layer each return `list(<layer>, <CoordSf>)` -- a default
+  `coord_sf(crs = NULL)` -- and ggplot2 replaces the plot's coordinate system
+  unconditionally when a coord is added. Both layers go on after
+  `wdj_coord_sf()`, so they threw away the requested CRS and its latitude clip:
+  `world_map(projection = "mercator", na_style = "hatched")` and the same call
+  with `projection = "robinson"` drew byte-identical maps. Two honesty features
+  quietly reprojecting the map is the opposite of the point.
+* **`clear_wdi_cache(disk = FALSE)` deleted the on-disk cache, and any other
+  file beside it.** memoise's `cache_filesystem()$reset()` is
+  `file.remove(list.files(dir, full.names = TRUE))`, so `forget()` on a
+  disk-backed memo was never an in-memory operation -- the call the examples
+  label "forget the in-session memo" wiped the persistent cache and every
+  unrelated file that happened to share the directory. The `disk` flag gated
+  nothing on the way in; it only decided whether the directory was additionally
+  removed. Dropping the memo reference is what an in-session clear means here,
+  and the next fetch reads the existing entries straight back.
+* **`years` meant something different for the World Bank than for every other
+  source.** It is documented as a numeric year *vector*, and the four adapters
+  honour that, but the WDI path used only `min()`/`max()` as a request range and
+  never filtered the result -- so `years = c(2000, 2020)` asked for two years
+  and got twenty-one.
+* **A mistyped `classify` silently added no classification columns.**
+  `world_data()` and `country_data()` filtered the argument with `intersect()`,
+  so `classify = "incomes"` matched nothing and quietly produced a frame with no
+  income, continent or region column rather than saying the value was not
+  recognised. `language` went straight to WDI, where a length-2 value surfaced
+  as "the condition has length > 1". Both are now checked before the network
+  call, so the error does not depend on having a connection.
+* **A mistyped `region` drew an empty map in silence.** `region` accepts a
+  continent, a group name, `iso3c` codes, country names or a bounding box, and
+  anything matching none of those fell through to name-matching, resolved to
+  `NA`, and produced an empty subset -- so `region = "Europ"` returned a blank
+  map with no explanation, and `region = NA` reached the internal tests as base
+  R's "missing value where TRUE/FALSE needed". Both are now reported. An
+  explicitly-uppercase unknown code still yields an empty subset, which is
+  deliberate and documented in the code.
+* **`add` reported its problems under somebody else's argument.**
+  `standardize_country(add = )` and `locate_country(add = )` name attributes to
+  derive from `iso3c`, and neither validated the argument: an unknown name
+  surfaced as countrycode's complaint about its `destination` argument, a bad
+  one in `locate_country()` as `convert_country()`'s `to`, and `add = NA` as
+  base R's bare "missing value where TRUE/FALSE needed". Both now check it, and
+  the shortcut table they accept is shared with the validator so the two cannot
+  drift apart.
+* **A malformed `custom_match` could put a non-code in `iso3c`.** `origin` was
+  validated and the override table was not, although every value in it lands in
+  the `iso3c` column -- and the `iso3c` branch whitelists those values as valid
+  by construction, so nothing downstream rejected them either.
+  `custom_match = c(Freedonia = 1)` therefore produced `iso3c == "1"`, and every
+  join, geometry lookup and group test after it keyed on that. The table must
+  now be the name-to-code map `country_overrides()` returns.
+* **`wdi_search()` searched for whatever it was given.** Only `field` was
+  checked, so a non-string `pattern` went straight into the regex and matched
+  something plausible: `wdi_search(1)` returned 10,125 indicators and
+  `wdi_search(NA)` the entire 29,495-row catalogue, both without complaint,
+  while an empty one leaked base R's "invalid 'pattern' argument". A `cache`
+  that was not a `WDIcache()` object died on "$ operator is invalid for atomic
+  vectors". Both are now checked.
+* **`spin_globe(file = )` was the one argument its validation block missed**,
+  so a non-string path leaked base R's "invalid 'path' argument" from inside the
+  writer -- the block's own comment says a bad argument is the caller's bug and
+  the message should not depend on which optional packages are installed.
+* **`audit_coverage()`'s group breakdown measured one indicator and did not
+  say which.** `by_group$na_rate` is computed on the first indicator -- with the
+  default that is whichever numeric column comes first -- while the printed
+  heading reads "Coverage by group", so a region's GDP coverage of 0.25 read as
+  its overall coverage even though population and life expectancy were complete.
+  The table now carries an `indicator` column naming what was measured.
+* **`compare_sources()` could report two providers as agreeing perfectly when
+  it had never compared them.** An unnamed `indicator` of more than one code was
+  silently truncated to its first element and broadcast to every source, so the
+  verb compared a code against itself and found no disagreement. Its own error
+  message elsewhere already told callers to "pass a single unnamed code";
+  nothing enforced it. Now rejected, with a pointer to the named form.
+* **`deflate()` overwrote an existing column in silence.** `to_ppp()` and
+  `smooth_rates()` are the same shape -- take a panel, write one derived column
+  back into it -- and both announce a clash before destroying the caller's
+  column. `deflate()` did not, so a frame that already carried `gdp_real` lost
+  it without a word.
+* **A repeated country-year made `interpolate_missing()` rewrite observed
+  values.** `stats::approx()` collapses tied x-values to their mean, so two rows
+  sharing a year were both overwritten with the average -- 20 and 999 became
+  509.5 apiece -- and the `_imputed` flag reported `FALSE` for them, since it
+  compares "was `NA`" against "is not `NA`" and neither ever was. The safeguard
+  the code documents, that a filler changing an observed value shows up as a
+  flagged cell, cannot catch this case. The malformed input is now reported, and
+  `approx()`'s own tie notice -- which reached the caller as an uninformative
+  "There was 1 warning in `dplyr::mutate()`" -- no longer leaks.
+* **A repeated country-year corrupted every verb that reads across rows.**
+  `lag_by_country()`, `diff_by_country()`, `growth_rate()`, `index_to()`,
+  `complete_years()`, `deflate()`, `to_ppp()`, `convergence_club()` and
+  `beta_convergence()` all read neighbouring rows, so a duplicated
+  country-year silently shifted them: with France's 2019 present twice as 20
+  and 999, 2020 was lagged against 999, giving a difference of 979 and 4895%
+  growth. The malformed input is now reported, and it names the offending key.
+* **The one-row-per-country verbs collapsed a panel silently.**
+  `world_table()`, `rate_check()`, `audit_coverage()`, `gridded_cartogram()`,
+  `bubble_map()`, `spike_map()`, `globe_map()`, `interactive_map()`,
+  `tile_map()` and `correlate_indicators()` reduce to one row per country -- which is for repeated *geometry* rows, not for time.
+  Handed a panel they kept whichever row sorted first and presented that year as
+  the answer: France's 2018 value of 10, out of 10, 20 and 30. They now say so.
+  `tile_map()` was worse than silent -- its grid holds exactly one cell per
+  country, so a panel fanned 239 cells out into 659 overlapping ones.
+* **A panel handed to `world_map()` was drawn silently.** `attach_geometry()`
+  joins a panel deliberately -- `facet_map()` and `animate_world()` are built on
+  it -- so a multi-year frame reaching a single static map drew each country
+  once per year and let whichever row came last win, with a caption that still
+  counted each country once, so nothing looked wrong. `world_map()` now says so
+  and points at the two verbs meant for a panel. Faceting *by* year and
+  `animate_world()` resolve the panel and stay quiet; faceting by anything else
+  does not -- each panel still stacks every year -- so there it still warns.
+* **Three counts lacked the upper bound their coercion needs.**
+  `world_query(n_bins = )`, `od_map(origins = )` and
+  `convergence_club(min_size = )` validated only a lower bound, then coerced
+  with `as.integer()` -- which past 2^31-1 returns `NA` with R's bare "NAs
+  introduced by coercion to integer range". The query came out reading
+  `BIN fill INTO NA`, `od_map()` reached `seq_len(NA)`, and every size
+  comparison in `convergence_club()` became `NA`. `compute_breaks()` has carried
+  this bound since 2.0.0; these three now do too.
+* **`subnational_map()` dropped unmatched regions in silence.** Its join keeps
+  the geometry and discards data rows that match none of it, so codes from a
+  different NUTS vintage simply vanished -- and only a *total* join failure was
+  reported, even though that error names the vintage problem exactly. Partial
+  mismatches are now named too.
+* **`check_country_match()` suggested a country for a blank cell.** The guard
+  skipped `NA` and `""` but not `"  "`, and Jaro-Winkler finds spurious
+  similarity between a two-space string and a name containing spaces -- so a
+  whitespace-only cell, the commonest thing a CSV import produces, came back
+  confidently suggesting "Congo - Kinshasa" at a distance of 0.29, well inside
+  the threshold.
+* `audit_coverage()`'s `n_missing` and `na_rate` are no longer named vectors.
+  `vapply()` names its result after `indicator`, so `a$na_rates$na_rate` handed
+  back `c(gdp = 0.1)` instead of `0.1` -- the same wart `country_network()`
+  already calls `unname()` on.
+* **Three verbs folded every uncoded country into a single row.** The
+  de-duplication that stops a polygon frame counting a country once per vertex
+  ran `distinct()` on `iso3c`, and `distinct()` treats `NA` as a value -- so
+  countries the codelist could not resolve collapsed together.
+  `audit_coverage()`, the verb the package points at for "which countries are
+  missing", named one unmatched country out of four and divided every `na_rate`
+  by a short `n`; `rate_check()` and `world_table()` quietly returned three rows
+  for a five-row input. Coded rows are still collapsed; uncoded ones now
+  de-duplicate on whatever else identifies them.
+* **`country_join()` and `country_join_all()` never reported a failed
+  reconciliation.** Reconciling both sides to a common key before joining is
+  the entire premise of these two verbs, yet a name that resolved to no country
+  was dropped in silence -- `join_world()` has warned about this all along, and
+  `wdj_to_key()` only speaks up when a name resolves to `iso3c` but has no
+  COW/GW code, which on the default `key = "iso3c"` is never. Both now name the
+  unresolved values, per side and per table, and both take `warn = FALSE` to
+  opt out.
+* **`aggregate_regions(fun = "weighted_mean")` returned `NaN` for a zero total
+  weight.** The unweighted branch turns an empty group into `NA` precisely
+  because `0`, `NaN` and `+/-Inf` all read as real figures for a region there is
+  no data for; the weighted branch checked only for missing values, so weights
+  that were all zero -- or that cancelled -- divided by zero and leaked the
+  `NaN` the documentation promises never to produce.
+* **`add_indicator()` suffixed the column it said it was overwriting.** When
+  the fetched indicator shared a name with a column already in `data`, the
+  warning read "Overwriting ... rename them first to keep the original values"
+  while the `left_join` underneath produced `val.x` and `val.y` -- so the caller
+  got neither the column they asked for nor the one they had, advised by a
+  message describing a mechanism that was not running. It now overwrites, as
+  every other `warn_overwrite()` caller does.
+* **An uncoded geometry row was counted as a country.** The bundled `sf`
+  basemap carries one row with no `iso3c`; coverage counted it, so it sat in
+  the denominator and in `n_missing` while `missing_iso3c` -- which sorts, and
+  so drops `NA` -- listed one fewer. `footnote = "auto"` read "159 of 176
+  countries shown; 17 missing" where provenance could name only 16 of them.
+  Coverage now counts coded countries only, and the two agree.
+* **`gridded_cartogram()` did the same, and mentioned only half of it.** It
+  drops countries with no positive value and countries with no bundled
+  centroid; only the second was ever reported, and provenance counted the
+  survivors, so a grid covering 94 of 215 countries reported "94 of 94". It now
+  names both drops and keeps the whole input as the denominator.
+* **A cartogram reported the world it kept, not the one it started from.**
+  `cartogram_map()` and `dorling_map()` drop every country without a positive
+  weight -- necessarily, since a cartogram's area *is* the weight -- but they
+  did it silently, and provenance was then computed on the survivors, so
+  `n_total` shrank to match. A map showing 69 of 175 countries reported
+  "69 of 73". Coverage is now measured against the frame as it arrived, and the
+  countries that could not be sized are named.
+* **`bivariate_map()` overstated its coverage the same way.** It classifies two
+  variables jointly, so a country holding only one is drawn as no-data -- but
+  provenance counted the x column alone. On a half-covered second variable it
+  reported 159 countries shown where 69 were coloured. It now counts both, and
+  names what it dropped.
+* **A VSUP map overstated its own coverage.** `world_map(uncertainty = )`
+  colours a country only where it has *both* a value and an uncertainty, but
+  coverage was counted from missing fill values alone. On a frame whose
+  uncertainty column was sparser than its value column -- an uncertainty join
+  that half missed, say -- `footnote = "auto"` reported 159 of 175 countries
+  shown when 69 were actually drawn, and `map_provenance()` agreed with it. The
+  footnote that exists to stop a map overstating what it covers was doing
+  exactly that. Coverage now counts both columns, and the countries dropped for
+  a missing uncertainty are named.
+* **`interpolate_missing()` flagged the wrong rows as imputed.** The
+  "was missing" vectors were captured from the input and compared against the
+  output, but the pipeline between them arranges by `iso3c` and `year` -- so the
+  two lined up only when the caller happened to pass an already-sorted frame.
+  On anything else the `_imputed` flags landed on entirely different rows,
+  marking observed values as imputed and imputed ones as observed. Since
+  `world_map()` reads that column to write its caption, an unsorted panel
+  produced a map that misreported exactly which countries had been filled in.
+  The flags now travel with their rows.
+* **`flow_matrix(fill = )` corrupted the flows it was meant to leave alone.**
+  `fill` is documented as the value for pairs with *no* flow, but the matrix was
+  initialised to it and the observed weights accumulated on top, so `fill = -1`
+  turned a flow of 10 into 9 -- and `symmetric = TRUE` then added the fill to
+  itself. Flows are now accumulated into zero and `fill` is applied only to
+  pairs no flow ever reached. The default `fill = 0` is unaffected.
+* **`compare_sources()` reported disagreement between the wrong sources.** Every
+  column of the pairwise summary is computed for its own pair except
+  `n_disagree`, which read the row-wise spread across *all* sources: comparing
+  three providers, a pair that agreed exactly was still counted as disagreeing
+  wherever some third provider was the outlier. A source that reports one value
+  for every country also leaked `cor()`'s "standard deviation is zero" warning;
+  the correlation is `NA` either way, so the case is now decided explicitly.
+* **`fetch_comtrade()` fetched only the first indicator.** It read
+  `indicator[[1]]` and ignored the rest, so a two-commodity call quietly
+  returned one column -- against the documented "one column per indicator" that
+  its three sibling adapters honour. It now makes one request per commodity and
+  joins them.
+* **The source adapters validate `indicator` before doing anything else.**
+  Called directly with an empty vector, `fetch_owid()`, `fetch_eurostat()` and
+  `fetch_oecd()` returned a silent `NULL`, and `fetch_comtrade()` leaked
+  comtradr's "subscript out of bounds". All four now give the same message
+  `fetch_indicator()` always gave, and give it whether or not the provider's
+  client package is installed.
+* **A provider that changes shape is named as such.** `adapter_reshape()`
+  checked the entity column but not the value column, although `fetch_eurostat()`
+  hard-codes `"values"` and `fetch_oecd()` guesses between two spellings; a
+  missing one became `as.numeric(NULL)` and surfaced as a recycling error
+  several frames away. `fetch_comtrade()`'s year column had the same gap.
+* **`country_sources()` no longer writes to your home directory.** It reported
+  which of the five backing packages were installed by calling
+  `requireNamespace()` on each, which *loads* them -- and `comtradr` creates
+  `~/.cache/R/comtradr` in its `.onLoad`. Merely asking which sources were
+  available therefore created a directory in the user's file space, which CRAN
+  policy forbids and `R CMD check` reports as a new file in another directory.
+  Availability is now tested with `system.file()`, which does not load.
+
+Five defects found by auditing 2.0.1; three produced a wrong or unusable
+picture rather than an error.
+
+* **`cartogram_map()`, `dorling_map()` and `tile_map()` rejected a categorical
+  `fill`.** All three hard-wired `scale_fill_viridis_c()`, so a discrete fill
+  column -- which their `fill` argument documents no restriction on -- was
+  accepted at the call and then died at *print* time with ggplot2's bare
+  "Discrete value supplied to a continuous scale". The scale is now chosen from
+  the column's type, as `world_map()` has done since 2.0.0.
+* **`geom_country_labels(data = ...)` was unusable**: `data` was hard-wired in
+  the layer call while `...` was documented as passing to that same call, so the
+  ordinary idiom for labelling a subset failed on R's `formal argument "data"
+  matched by multiple actual arguments`.
+* **`world_map(projection = "mercator")` produced an unusable map.** Natural
+  Earth's Antarctica reaches -90 degrees, where Mercator's *y* goes to infinity;
+  PROJ clamps rather than erroring, so the panel came out three times taller
+  than the world is wide, with the inhabited world a sliver above one grey
+  rectangle of smeared Antarctica. Mercator is now clipped to +/-85.05113
+  degrees, as Web Mercator has been since it was defined.
+* **`locate_country(points = )` leaked an sf internal** ("no applicable method
+  for 'st_transform'") for anything that was not already `sf`. A plain lon/lat
+  frame is the commonest thing to pass, so it now gets a named error saying how
+  to convert it.
+* **`morans_i()` could not reveal what it had dropped** -- see below.
+* **A wrong coding scheme died inside `countrycode`.** `origin` is user-facing
+  on seventeen exported functions -- `neighbors()`, `country_join()`,
+  `standardize_country()`, `flow_map()`, `country_timeline()`, `in_group()` and
+  the rest -- and was validated only as "a string". Anything else reached
+  `countrycode::countrycode()` and failed there, so `origin = "country"` raised
+  a forty-item list of accepted values attributed to an argument the caller had
+  never passed. Invalid schemes now raise a `countryatlas` error naming the one
+  they probably meant: `"country"` and `"name"` both suggest `"country.name"`,
+  `"iso3"` and `"ISO3C"` suggest `"iso3c"`.
+* **`convert_country()`'s own `from` and `to` were the two that guard missed.**
+  Every scheme other than `"country.name"` and `"iso3c"` skips the `iso3c` hop,
+  so `from` reaches `countrycode()` directly and was still blamed on `origin`;
+  and `to` was never checked at all, so a typo produced "the `destination`
+  argument must be ... one of the column names in the conversion directory" --
+  an argument, and a directory, the caller never mentioned. Both now name
+  themselves and suggest the nearest real value, so `to = "contnent"` offers
+  `"continent"`. The shortcut destinations (`flag`, `currency`, `tld`,
+  `calling_code`, `name_fr`-style localised names) are unaffected.
+* **`register_country_source(key_col = )` was used as a coding scheme.**
+  `key_col` names the column `fetch` returns, and is documented and indexed as
+  such -- but it was also handed to `countrycode()` as `origin`, so the only
+  registrations that worked were those whose column happened to be named after
+  a scheme. Every bundled source uses the `"iso3c"` default, which
+  short-circuits before `countrycode()` is reached, so nothing in the package
+  exercised it and the first source registered with `key_col = "country"` died.
+  How to *read* the column is now its own argument, `key_type` (default
+  `"iso3c"`), validated at registration and reported by `country_sources()`.
+* **"5 countries ... has no cowc code."** The COW / Gleditsch-Ward key
+  warning interpolates which table it refers to *between* the count and the
+  verb, and cli keys an agreement marker to the most recent interpolated
+  value -- a length-1 string here -- so the verb stayed singular however many
+  countries were lost. `cli::qty()` now re-keys it to the count. (Only
+  literal markup such as `{.field iso3c}` is safe to sit between a count and
+  its agreement.)
+* **`world_map(engine = "tmap")` ignored most of its arguments.** The engine
+  received all of `world_map()`'s arguments and used ten of them, dropping the
+  rest in silence: `projection` and `recenter` (so the documented default,
+  Equal Earth, was dropped just as quietly as an explicit request), plus
+  `na_style`, `footnote`, `classification_report`, `uncertainty` and
+  `disputes`. `projection` and `recenter` are now honoured -- `wdj_crs()`
+  resolves both and `tm_shape()` takes the result, which also means a bad
+  projection name is finally rejected instead of ignored. The remainder are
+  genuinely ggplot2-specific, so they are now named
+  (`countryatlas_engine_ignored`) rather than quietly not happening.
+* **`globe_map(interactive = TRUE)` accepted styling it could not use, and
+  validated nothing.** The hand-off to MapLibre returned before
+  `arg_match()` and `check_label_args()` ran, so `style = "nonsense"` and a
+  length-3 `title` were taken without a murmur, and `style`, `palette`,
+  `n_bins`, `borders`, `title`, `legend`, `na_label` and `backend` were all
+  dropped. The arguments are now validated before the hand-off, and the ones
+  MapLibre cannot carry are named.
+* **`world_map(engine = "tmap")` ignored `na_label`.** The argument was
+  passed into the tmap backend and never used, so a caller who named the
+  missing-data key got tmap's own default instead, with nothing to indicate
+  the label had been dropped -- while the ggplot2 engine honoured it. Every
+  tmap scale takes `label.na`, so it is now passed through, and both engines
+  share one normalisation of what the argument means (first element; a
+  length-1 `NA` or `NULL` leaves the engine's own formatter alone).
+* **`projection` was accepted and silently ignored by the polygon backend.**
+  It is documented for the `sf` backend, and `recenter` already warned when it
+  could not be honoured, but `projection` did not: the polygon backend returns
+  unprojected longitude/latitude, so `projection = "mollweide"` looked
+  honoured and changed nothing. It now warns
+  (`countryatlas_projection_ignored`). `world_data(geometry = "none")` fetches
+  no geometry at all and so warns for `scale`, `projection` and `recenter`
+  alike, where before it took all three and dropped them.
+* **`world_data(region = ..., geometry = "none")` returned every country in
+  the world.** `region` is documented as a plain "Optional subset", but it was
+  only ever applied inside `attach_geometry()` -- which the `"none"` branch
+  skips -- so the argument was dropped in silence and a request for one
+  continent came back with all of them. It now subsets the table directly. A
+  bounding-box `region` has nothing to clip against without geometry, so that
+  combination is refused rather than guessed at.
+* **A `scale` of more than one value produced an error from base R.** The
+  sf backend builds its cache key with `paste0("scale_", scale)` *before*
+  validating, so a length-2 value vectorised into a two-element key and `[[`
+  on an environment failed with "wrong arguments for subsetting an
+  environment" -- naming neither the argument nor the package. A typo, a
+  number, `NA` and `NULL` all reached the real check and reported properly;
+  only the multi-value case escaped it. `scale` is now checked before it
+  becomes a key. Affects `country_borders()`, `neighbors()`, `morans_i()`,
+  `world_geometry(geometry = "sf")` and everything else routed through
+  `get_world_sf()`.
+* **`scale` was accepted and silently ignored by the polygon backend.**
+  It selects a Natural Earth resolution, which only the sf backend fetches;
+  the bundled polygons come at one resolution. `world_geometry(scale =
+  "large")` and `attach_geometry(scale = "large")` therefore returned small
+  polygons as though the request had been honoured, and `scale = 2` was not
+  even rejected. Both now warn (`countryatlas_scale_ignored`) and point at
+  `geometry = "sf"`, matching the existing notice for `recenter`.
+* **`cartogram_diagnostics()` leaked the geometry engine's error.** One
+  invalid ring makes s2 refuse `st_area()` with "Loop 0 is not valid: Edge 0
+  crosses edge 2", which names neither the country nor the package. It now
+  reports which geometries are invalid and points at `sf::st_make_valid()`.
+  Unlike `country_borders()`, it cannot simply fall back to the planar GEOS
+  engine: an area is the number this function reports, so switching engines
+  would quietly change the answer.
+* **`complete_years()` gave every year it invented an empty geometry.** The
+  function exists so "animations do not flicker on missing years", but on an
+  `sf` panel it produced exactly that: `tidyr::complete()` fills an invented
+  row's geometry with an *empty* geometry rather than `NA`, so the
+  `tidyr::fill()` that carries static columns forward saw nothing missing and
+  skipped it, and the completed years rendered blank. Each country's own shape
+  is now carried across its invented rows.
+* **`complete_years()` also dropped the `sf` class.** `tidyr::complete()`
+  returns a plain tibble while leaving the geometry column intact, so the
+  result still held a live `sfc` column that `geom_sf()` and `st_bbox()` would
+  not accept until the caller re-ran `st_as_sf()`. Fifteen other
+  frame-returning verbs preserve `sf`; this one now does too.
+* **`interactive_map()` discarded `...` for two of its five engines, one of
+  them against its own documentation.** `@param ...` promised the dots reach
+  `world_map()` for the `"plotly"` *and* `"ggiraph"` engines -- but the
+  `"ggiraph"` branch assembles its own ggplot instead of calling
+  `world_map()`, as a comment in it says, so
+  `interactive_map(engine = "ggiraph", style = "quantile")` returned a default
+  continuous map with no hint that the classification had been dropped. The
+  `"leaflet"` engine builds its own map too and was not documented at all,
+  and `"mapgl"` forwards to `mapgl::maplibre()`, which was also undocumented.
+  Both self-assembling engines now name what they were given, the `@param`
+  says where the dots actually go for each of the five, and `"plotly"` still
+  forwards them (so an unknown argument is still an error there).
+* **`world_table(engine = "tibble")` dropped `title` and `subtitle` in
+  silence.** A tibble has no header, so neither can be drawn -- but the `gt`
+  path already refuses to drop a subtitle quietly ("`subtitle` needs a
+  `title`"), and the same objection applies here: the caller got back a table
+  they believed was titled. Both are now named, and when `gt` is simply not
+  installed the notice points at installing it rather than at an engine the
+  session cannot reach.
+* **`index_to()` with no `base_year` gave base R's error.** Omitting the
+  argument reached `check_number()` and produced 'argument "base_year" is
+  missing, with no default'. `deflate()`, the sibling with the same argument,
+  has said "`base_year` is required." since 2.0.0.
+* **`disputed_territories$administered_by` and `$claimed_by` mixed ISO codes
+  with placeholders, and said nothing about it.** The columns read as `iso3c`
+  and mostly are, but six parties are entities ISO assigns no code to and are
+  written as `ABK`, `CYP-N`, `OST`, `PMR`, `SAH` and `SOL` -- so treating the
+  column as ISO-keyed produced silent `NA`s in a package whose premise is that
+  ISO codes are the join key. The `iso3c` column had always documented its own
+  `NA` convention; these two now document theirs -- including that five of the
+  six administer the like-named territory (which has no ISO code either) while
+  `SAH` is a claimant only, of a territory ISO does code (`ESH`) -- and a test
+  pins the exact set so it cannot drift or absorb a typo.
+* **Three more character column arguments died on base R's "object not
+  found".** `aggregate_regions(by = region)`, `world_table(columns = gdp)` and
+  `country_codes(codes = iso3c)` all take column names as *strings* while
+  sitting next to an argument that takes a bare column, which makes the slip
+  an easy one -- and it failed while the argument was being evaluated, before
+  any validation could run, so the message named neither the argument nor the
+  package. `complete_years()`, `interpolate_missing()` and `audit_coverage()`
+  already caught it; these three now do too. (`rank_countries(within = )`
+  deliberately accepts either form and is unchanged.)
+* **A repeated column name was ambiguous everywhere but one verb.** What
+  `read.csv(check.names = FALSE)` gives you for a sheet with two `gdp` columns
+  makes every by-name reference ambiguous. `interpolate_missing()` refused it;
+  nothing else did. Ten verbs leaked the tibble error "Column name `gdp` must
+  not be duplicated. Use `.name_repair` to specify repair" -- a message about
+  internals in tibble, not about the caller's data -- and two, `per_capita()`
+  and
+  `to_ppp()`, silently succeeded: they computed from whichever column `[[`
+  reached first and dropped the other without a word. The guard now lives in
+  the validators every verb already calls (`check_cols()`,
+  `check_panel_cols()`, `check_panel_unique()`), and in the two functions that
+  reach `as_tibble()` before validating anything
+  (`countryatlas_duplicate_columns`).
+* **`rank_countries()` returned a `data.frame` where its siblings return a
+  tibble.** It ended in `dplyr::ungroup()`, which strips a grouping but does
+  not normalise a class -- and because it deliberately ungroups its input
+  first, `mutate()` left a plain frame plain. Four sibling verbs ended the
+  same way and were safe only because `group_by()` had already made their
+  intermediate a tibble; all five now state the contract explicitly.
+* **Four verbs leaked an incoming grouping.** `to_ppp()`, `smooth_rates()`,
+  `interpolate_missing()` and `spatial_lag()` ended in a bare `data`, so they
+  returned whatever class arrived: a grouped frame stayed grouped and the
+  caller's next `mutate()` silently computed per group, and a plain
+  `data.frame` never became a tibble. Their sibling verbs all normalise on the
+  way out. The leak also hid on early-return paths of otherwise-fixed verbs --
+  `smooth_rates(method = "none")`, `interpolate_missing(method = "none")` and
+  both branches of `spatial_lag()` -- so a mode of the same function returned
+  a different class from its default.
+* **`join_world(region = ..., geometry = "none")` returned every row**, for
+  exactly the reason `world_data()` did: the `"none"` branch returned before
+  any of the geometry arguments were applied, though `region` is documented as
+  a plain region subset. It now subsets, refuses a bounding box that has
+  nothing to clip against, and warns for `scale`, `projection` and `recenter`.
+* **`standardize_subnational()` never consulted the `regions` crosswalk, and
+  did not say so.** It looks for a `geo_name`, `name` or `region_name` column
+  in `regions::nuts_lau_2019` or `regions::all_valid_nuts_codes`. As of
+  `regions` 0.1.8 the first exposes `lau_name_national` and `lau_name_latin`,
+  and the second has no name column at all -- so neither matched, the lookup
+  was skipped, and the caller was told only that their regions "did not
+  resolve", with a hint about European coverage that had never been consulted.
+  It now reports once per session that the installed `regions` offers no
+  crosswalk it can use, so the real reason is visible. The behaviour is
+  otherwise unchanged, deliberately: the `regions` datasets that *do* pair
+  names with codes (`nuts_changes`, `google_nuts_matchtable`) key NUTS codes
+  such as `DE2` rather than ISO 3166-2 codes such as `DE-BY`, and filling an
+  `iso_3166_2` column from them would break this function's promise that an
+  unresolved region gets `NA`, never a guess.
+* **Four messages read wrongly when they described exactly one thing.**
+  `subnational_map()` said "1 value ... match no geometry and are dropped",
+  `check_dispute_coverage()` said "1 have no ISO code" and "1 ... territories
+  appear", and `gridded_cartogram()` said "there are 1 countries to place".
+  Each now agrees with its own count. `cli` keys a `{?...}` agreement to the
+  most recent interpolated number, so the count and every agreement have to sit
+  together -- an interpolation in between silently re-keys them, which is why
+  the totals in two of these messages moved to the end of the sentence.
+* **An unreachable GISCO reported itself as an `sf` method error.**
+  `giscoR::gisco_get_nuts()` answers a failed download with `NULL` rather than
+  an error -- the same shape as `owidR`'s blank result, which `fetch_owid()`
+  names explicitly and for exactly this reason. `nuts_geometry()` had no such
+  guard, so the `NULL` reached `sf` as "no applicable method for `st_as_sf`
+  applied to an object of class NULL", which says nothing about GISCO being
+  unreachable and sends the reader to check their arguments. An empty response
+  now says so, naming the level and vintage. A response carrying no `NUTS_ID`
+  column is diagnosed too: previously the derived `iso3c` came back
+  zero-length and base R failed with "replacement has 0 rows, data has 2".
+* **A changed World Bank response shape was reported as a failed download.**
+  `countrycode()` is handed `raw$iso2c` directly to derive `iso3c`, so a
+  response carrying neither key raised its own "sourcevar must be a character
+  or numeric vector" -- which the fetch wrapper then relabelled "Could not
+  fetch indicator … from the World Bank API". That blames the network for a
+  change in the provider's response, and attaches advice about an argument the
+  caller never passed. The response shape is now diagnosed by name, listing the
+  columns that did arrive, and the wrapper passes that diagnosis through
+  instead of overwriting it.
+* **A non-numeric provider response became a column of `NA` in silence.**
+  `as.numeric()` turns text that is not a number into `NA` without complaint,
+  so a provider answering with `"n/a"` or `".."` -- or renaming a column so the
+  value column now holds a label -- handed back pure `NA`. That reads as "the
+  provider has no data for these countries", which is a very different claim
+  from "the response was not numeric". `fetch_eurostat()` and `fetch_oecd()`
+  were exposed because they name the value column outright, where
+  `fetch_owid()` auto-detects it and so refuses a non-numeric column up front.
+  The count is now reported, with the offending values shown. A value the
+  provider itself reported as missing is already `NA` and is not counted.
+* **The provider adapters discarded duplicate rows in silence.**
+  `fetch_owid()`, `fetch_eurostat()`, `fetch_oecd()` and `fetch_comtrade()` all
+  end by keeping one row per country-year, which is the contract the downstream
+  joins rely on. But they kept whichever row came first and said nothing, so a
+  provider answering with two different values for one country-year handed back
+  an arbitrary one -- order-dependently, and invisibly. The count is now
+  reported, as it is everywhere else this package drops rows. A genuine panel
+  is untouched, and a clean response stays silent. `country_data()`'s own
+  collapse is deliberately left quiet: there the cause is two `iso2c` codes
+  mapping to one `iso3c`, which is structural to the World Bank country list
+  and would fire on essentially every call.
+* **A source whose keys collapsed repeated the caller's rows in silence.**
+  Standardisation merges keys as well as failing on them -- "United States" and
+  "USA" both reach `USA` -- and `add_indicator()`'s join then matched twice, so
+  a two-row frame came back with three rows and one country holding two
+  different values. dplyr only warns on many-to-many relationships, not
+  one-to-many, so nothing was said. `join_world()` has warned about this since
+  it gained that check; the source adapters now do too. The standardised key is
+  also checked directly, because the collapse check by construction only sees a
+  code reached from *more than one* raw value -- a source that simply returns
+  `USA` twice collapses nothing and so said nothing, while the join still
+  turned two rows into three. A genuine panel is untouched: the check keys on
+  `iso3c` and `year` together wherever a year column exists. The documented
+  fetch contract now states the uniqueness requirement, which it never did --
+  it specified the columns and said missing data should arrive as `NA` rather
+  than a missing row, but never that the key must not repeat.
+* **A cross-section joined to a multi-year fetch lost the year that
+  distinguished the rows.** Dropping the fetch's `year` column is right for a
+  single-year fetch, where it broadcasts the one value across the frame. Done
+  unconditionally, a two-row cross-section joined to a three-year source came
+  back as six rows: the same `gdp` three times, against values whose year had
+  just been deleted, so nothing recorded which year any of them belonged to.
+  The column is now kept when it is doing work, and `add_indicator()` says why
+  the frame grew.
+* **`add_indicator()` handed back the source's own key column** as though it
+  were requested data, because the columns to add excluded only `"iso3c"`. A
+  source keyed on anything else left a stray column -- `country` next to
+  `iso3c` -- in the result.
+* **Re-registering a source kept serving the old one's answers.** The
+  session cache keys on the indicator, countries and years but not on `fetch`,
+  so correcting a broken adapter and registering it again returned the broken
+  result -- which is what writing an adapter looks like. Registering a name now
+  drops that source's cached answers.
+* **An optional column argument was not validated like a required one.**
+  `quo_arg_name()` gives every unquoted column argument its "must name a
+  column, not `gdp + 1`" error, with the advice to compute the column with
+  `mutate()` first -- and for the *required* arguments it did. Twelve
+  optional ones called `rlang::as_name()` directly, so an expression reached
+  the caller as rlang's own "Can't convert a call to a string", naming neither
+  the argument nor what it wanted. In several functions the required argument
+  was checked and the optional one beside it was not: `bubble_map()` validated
+  `size` but not `color`, `flow_map()` validated `from` and `to` but not
+  `weight`, `cartogram_map()` validated `weight` but not `fill`. Now covered:
+  `per_capita(pop)`, `aggregate_regions(weight)`, `rank_countries(within)`,
+  `flow_matrix(weight)`, `flow_map(weight)`, `bubble_map(color)`,
+  `cartogram_map(fill)`, `gridded_cartogram(fill)`,
+  `cartogram_diagnostics(weight)`, `interactive_map(tooltip)`,
+  `animate_world(time)` and `join_world(country_col)`. `within`'s deliberate
+  character-vector form is unaffected.
+* **Three optional columns were never checked for existence either.**
+  `per_capita(pop = )` left the population vector `NULL` and failed with base
+  R's "replacement has 0 rows, data has 4"; `aggregate_regions(weight = )` and
+  `rank_countries(within = )` failed from inside dplyr. All three now say which
+  column is missing, as their required arguments already did.
+* **A data frame was accepted where a country vector belongs.**
+  `as.character()` on a data frame deparses each *column* into a string, so
+  `neighbors(my_df)` came back with the two "countries" `c("USA", "FRA")` and
+  `c(1, 2)` -- silently, because those are just strings that match nothing and
+  every row then reads as "country not found". Nearly every other verb here
+  takes `data` as its first argument, so handing a frame to one that takes a
+  vector is the natural mistake, and eight of them took it:
+  `neighbors()`, `convert_country()`, `country_timeline()`,
+  `dissolve_country()`, `in_group()`, `distance_between()`,
+  `check_country_match()` and `repair_country_names()`. `gini()` and `theil()`
+  already refused a data frame; all of them now do. A data frame is only the
+  common case -- `as.character()` deparses *any* list element that is not a
+  single value, so `list(c("FRA", "DEU"))` collapsed to the one string
+  `c("FRA", "DEU")` and returned a single `NA` where two codes were asked for.
+  A flat list of scalars, a matrix and a factor all coerce correctly and are
+  left alone.
+* **`aggregate_regions()` crashed on the package's own `sf` output.** An `sf`
+  frame is the one geometry shape this verb can aggregate correctly -- it
+  carries a single row per country, so the totals are right -- but `dplyr`'s
+  `sf`-aware `summarise()` unions the geometries per group, and the bundled
+  Natural Earth polygons include two invalid ones (Sudan and Mozambique). So
+  `join_world(geometry = "sf") |> aggregate_regions(population)` died with
+  the raw GEOS error `TopologyException: side location conflict`, while the
+  same call
+  on a plain frame worked. It also drew the "aggregating counts each country
+  once per geometry row" warning, which is true of a polygon frame and false of
+  an `sf` one. The geometry is now dropped up front -- the documented return
+  was always "a tibble of `by` plus the aggregated value" -- giving results
+  identical to dropping it by hand, and the warning is confined to the polygon
+  case where the hazard is real.
+* **Four verbs reorder your rows and did not say so.** `growth_rate()`,
+  `lag_by_country()`, `diff_by_country()` and `interpolate_missing()` read each
+  country's series in time order, so they return rows sorted by `iso3c` then
+  `year` -- but documented only "`data` with a column added". A caller holding
+  a vector alongside `data` and relying on position would have had it silently
+  stop lining up. The sorting is required and unchanged; the documentation now
+  states it.
+* **`?interpolate_missing` described the wrong mechanism.** It said the
+  `"countryatlas_imputed"` attribute is what "the map verbs read". They do not:
+  provenance counts the `*_imputed` *columns* by name, which is why the
+  provenance chain survives verbs that drop attributes, as `dplyr` does. The
+  page now points at the columns and says the attribute is a convenience
+  nothing in the package consumes.
+* **An `sf` frame stopped being `sf` halfway through a pipeline.**
+  `per_capita()`, `share_of_world()` and `standardize_country()` all document
+  their result as "`data` with the requested columns added", and
+  `rank_countries()` honours that -- but these three ended with
+  `tibble::as_tibble()`, which strips the `sf` class. The geometry column
+  survived, so nothing looked wrong until the next verb:
+  `join_world(geometry = "sf") |> share_of_world(population) |> world_map()`
+  died on "`data` has no map geometry", while the same pipeline through
+  `rank_countries()` worked -- which is what gave it away. `sf` now survives
+  all three. Every other class is still normalised to a tibble and grouping is
+  still dropped, both of which `as_tibble()` had been doing at the same time
+  and only one of which was wrong.
+* **Three map verbs broke on a frame that already had the columns they join
+  in.** Each attaches coordinates under a fixed name, and when the caller's
+  frame already carried that name dplyr suffixed both sides to `.x`/`.y`,
+  leaving the code reading the unsuffixed name to fail on a column that had
+  been renamed out from under it -- always as an internal `vctrs` or `ggplot2`
+  error that says nothing about countries:
+  * `gridded_cartogram()` on a frame carrying `centroid_lon`/`centroid_lat`
+    -- which `country_meta` supplies, so joining it for capitals or area
+    first is ordinary -- failed with "Can't subset rows with
+    `is.na(df$centroid_lon) | ...`".
+  * `tile_map()` on a frame with a `row` or `col` column, names common enough
+    to collide by accident, failed with "Problem while computing aesthetics".
+  * `flow_map()` on a frame with `x0`, `y0`, `x1` or `y1` -- exactly what a
+    caller who geocoded their own endpoints has -- failed with "Can't subset
+    columns that don't exist".
+
+  `bubble_map()` and `spike_map()` already dropped the caller's centroid
+  columns before the same join; all three now drop the colliding copy, and the
+  output is identical either way. Where the clashing column is one the verb
+  actually reads -- a `fill` that is also a tile coordinate, a `weight` that is
+  also an arc endpoint -- it is refused by name rather than silently dropped.
+* **`deflate()` and `to_ppp()` did not guard the join collision `per_capita()`
+  does.** All three fetch a series into a `.wdj_*` column and join it on
+  `iso3c`/`year`. A caller whose own frame already had that column made dplyr
+  suffix both sides to `.x`/`.y`, leaving the fetched column unreachable and
+  the arithmetic operating on nothing. `per_capita()` has dropped the colliding
+  column since it hit this; its two siblings now do the same.
+* **`audit_coverage()` reported perfect coverage of nothing.**
+  `tibble::as_tibble()` turns a bare vector into a one-column tibble called
+  `value`, so a character vector of country codes -- the mirror of the mistake
+  above -- came back as a coverage object whose three tables were all empty.
+  That reads as "no missing data" when nothing had been examined at all.
+  `standardize_country()` already refused a non-frame; this now does too.
+* **`world_table()` returned an empty table without saying why.** Rows whose
+  value is `NA` cannot be ranked, so they are dropped -- but when that removed
+  every row, a frame that went in with countries in it came back with none, and
+  nothing distinguished "the column is empty" from "there was nothing to
+  report". It now says so, while a partial drop (the normal case) and a 0-row
+  input stay silent.
+* **`recenter` was silently dropped on the polygon backend.** The polygon
+  backend returns lon/lat vertices, and recentring them means re-splitting
+  every ring at the new antimeridian -- which is what
+  `sf::st_break_antimeridian()` does on the `sf` backend. `recenter` was simply
+  ignored on the polygon side, so `join_world(recenter = 150)`,
+  `attach_geometry(recenter = 150)` and `world_geometry(recenter = 150)`
+  returned byte-identical coordinates to `recenter = NULL` and drew an
+  Atlantic-centred map for someone who had asked for a Pacific-centred one.
+  They now say so and point at `geometry = "sf"`, in the same shape as the
+  existing bounding-box warning on that backend. `?world_geometry` was also
+  the one help page that did not already describe `recenter` as an `sf`
+  option.
+* **`n_perm = 0` returned undocumented `NA` p-values.** `morans_i()` documents
+  the escape hatch ("use `0` to skip the test"), and all three statistics
+  validate `n_perm` with a lower bound of zero -- but `local_morans()` and
+  `gearys_c()` described the argument only as "permutations for the
+  pseudo-p-value", so passing `0` handed back a whole column of `NA` with
+  nothing to say the test had been skipped. All three now document it, and say
+  that `p_value` comes back `NA`.
+* **Two bundled datasets did not name every column they have.**
+  `?country_meta` listed sixteen of its seventeen columns, omitting `income` --
+  the World Bank income group that `audit_coverage(by = "income")` and
+  `rank_countries(within = "income")` read -- and `?world_snapshot` called
+  `continent`, `region` and `income` merely "classifications" without naming
+  them.
+* **`interpolate_missing()` silently renamed a duplicated column.**
+  `complete_years()` and `audit_coverage()` reject a frame with two columns of
+  the same name; this one filled the first and handed the second back renamed
+  -- `v` and `v` in, `v` and `v.1` out, without a word.
+* **`index_to()` indexed a whole country to `NA` depending on row order.**
+  `year == base_year` is `NA` for a missing year, and `x[c(NA, TRUE)]` returns
+  an `NA` element *before* the real match, so taking the first element picked
+  up the `NA`. The same three observations gave 100/150/50 with the missing
+  year last and `NA`/`NA`/`NA` with it first. The base year is now chosen from
+  the rows that have one.
+* **`compare_sources()` invented a country from an unparseable year.**
+  `read_year()` deliberately records `NA` for a time value it cannot parse, and
+  subsetting a data frame by a condition containing `NA` appends a row of all
+  `NA` -- a phantom country with no `iso3c`, which then survived the join into
+  the comparison table.
+* **A brace in borrowed text replaced the message it was reporting.** A `cli`
+  bullet is a template, so text taken from somewhere else -- a parallel
+  worker's error, an on-disk cache read failure, `countrycode`'s own complaint
+  -- had its braces interpolated. A worker failing with `bad json {"a": 1}`
+  reported "Could not evaluate cli `{}` expression" and the real failure was
+  gone, which is the worst possible moment to lose it. Four sites now pass the
+  borrowed text through as a value.
+* **A bare column in a string-taking verb gave `object 'v' not found`.** Nine
+  of these verbs take an unquoted column through tidy eval; three take strings
+  -- `interpolate_missing(value)`, `complete_years(value)` and
+  `audit_coverage(indicator)`. Writing the bare column that works everywhere
+  else produced base R's "object not found", naming neither the argument nor
+  the string it wanted. They now say what to write -- `value = "v"` -- while
+  leaving a genuine error in the argument untouched.
+
+## Spatial statistics: weights first
+
+`morans_i()` shipped with one hard-wired weight scheme, land-border contiguity.
+An island has no land border, so Japan, the United Kingdom, Australia,
+Indonesia, Madagascar, New Zealand, the Philippines, Iceland and every small
+island state carried no weight and left the analysis -- 49 of the 191 countries
+with data in `world_snapshot`. The omission is systematic, not random.
+
+* **`country_weights()`** builds the weights as a first-class object:
+  `"contiguity"`, `"knn"` (every country gets neighbours, islands included),
+  `"distance"`, or `"custom"` -- which is how a *non-geographic* neighbourhood,
+  trade volume or migration flows, goes through the same API.
+* **`morans_i(weights = )`** accepts it, and now reports `n_excluded` and an
+  `excluded` list-column whatever the scheme. The two answers differ and both
+  are defensible: contiguity gives I = 0.61 on 142 countries, k-nearest gives
+  0.47 on 189.
+* **`local_morans()`** and **`lisa_map()`** give the LISA cluster
+  classification and its map; **`gearys_c()`**, **`getis_ord()`** and
+  **`spatial_lag()`** complete the set. No `spdep` required -- at ~200 countries
+  the dense arithmetic is trivial.
+
+## Data sources beyond the World Bank
+
+A contract, not N bespoke fetchers.
+
+* **`register_country_source()`** teaches the package a new provider. A registry
+  rather than more `Suggests`, so a source with no CRAN package -- V-Dem, the
+  IMF, a proprietary internal feed -- is a first-class citizen without the
+  package depending on anything.
+* **`fetch_indicator()`**, **`add_indicator()`** and **`country_sources()`** are
+  the user-facing verbs; **`fetch_owid()`**, **`fetch_eurostat()`**,
+  **`fetch_oecd()`** and **`fetch_comtrade()`** ship as built-in adapters, each
+  gated on its own client package.
+* **`compare_sources()`** is the one that earns its place. Anyone can call
+  `owidR`; what nobody does is tell you that OWID and the World Bank disagree
+  about GDP per capita for fourteen countries because of different vintages, PPP
+  bases or territorial definitions. On the ISO spine that comparison is one
+  join.
+* `clear_wdi_cache()` generalises to **`clear_country_cache(source = )`**; the
+  old name still works.
+
+## Time
+
+* **`historical_geometry()`** draws the world as it was, from CShapes 2.0
+  (1886-2019) -- states *and* colonies, which is what makes a pre-decolonisation
+  map possible at all. `world_geometry(year = )` and `attach_geometry(year = )`
+  route to it.
+* **The ISO spine does not reach back, and the package now says so.** ISO 3166
+  was published in 1974 and never covered colonies, so `country_join(key = )`
+  and `country_join_all(key = )` gain `"cowc"`, `"cown"` and `"gwn"` as
+  alternate spines, and warn -- naming which table -- about the dependencies
+  COW/GW cannot carry. `historical_geometry()` is keyed on
+  `gwcode`, with `iso3c` as a best-effort extra that is `NA` for every entity
+  that never had one.
+* **`country_groups_history`** (new dataset) dates membership for twelve groups,
+  so **`country_groups(as_of = )`** and **`in_group(as_of = )`** answer the
+  question a panel actually asks. The United Kingdom was in the EU in 2016 and
+  not in 2021; EFTA had eight members in 1965 and has four now. Commonwealth,
+  G20 and OPEC are deliberately *not* dated -- their histories involve
+  suspensions and contested dates, and a fabricated date is worse than an absent
+  one. The table is validated at build time against `country_groups_tbl`.
+* **`country_timeline()`** reads the crosswalk both ways: what the USSR became,
+  and what Estonia was part of. **`audit_time_coverage()`** catches the rows a
+  successful join leaves wrong -- South Sudan with 1995 data, Czechoslovakia
+  with 2001 data.
+
+## Honesty as a feature
+
+* **`world_map(na_style =)`** chooses how missing countries are drawn:
+  `"grey"` (the default, and ambiguous -- grey reads as "low" to many people),
+  `"hatched"` (diagonal hatching via the optional `ggpattern`, unmistakable and
+  greyscale-safe), `"outline"` or `"omit"`.
+* **`world_map(footnote = "auto")`** generates the coverage line -- "174 of 195
+  countries shown; 21 missing" -- so a map cannot quietly overstate what it
+  covers. A string is used verbatim.
+* **`coverage_map()`** maps data availability itself, the cartographic
+  counterpart to `audit_coverage()`'s table.
+* **`world_map(classification_report = TRUE)`** attaches the breaks, the method
+  and the count of countries per class to the plot. A map whose top class holds
+  one country and whose bottom holds ninety is misleading, and the counts say so
+  at once.
+* **`classify_compare()`** draws the same choropleth under several
+  classifications with that table for each. On `world_snapshot`'s GDP per
+  capita, equal-interval and pretty breaks put 173 of 189 countries (92%) in a
+  single class while quantile spreads them 38/38/37/38/38 -- the difference
+  between a map that says something and one that says nothing.
+  `?world_map` now states Brewer & Pickle's (2002) finding that quantiles read
+  best and Jenks materially worse, with the citation, since that is the reverse
+  of the common GIS default.
+* **`value_by_alpha_map()`** encodes the value in colour and an equalising
+  variable (usually population) in opacity, over a neutral background. It is the
+  answer to the small-number problem -- an eleven-thousand-person country's rate
+  shouting as loudly as a billion-person country's -- and unlike a cartogram it
+  solves it without distorting geometry (Roth, Woodruff & Johnson 2010).
+
+## Honesty, continued
+
+* **`disputed_territories`** (new dataset) records *that* a territory is
+  contested and *who the parties are*. It does not adjudicate, rank claims or
+  imply any claim is better founded. **`dispute_policy()`** records which map
+  convention you are using -- and warns that selecting `"de_jure"` does not
+  change a single shape, because the package ships no claimed-boundary
+  geometry. **`check_dispute_coverage()`** and `world_map(disputes = "mark")`
+  stop a contested area passing unremarked.
+* **`world_map(uncertainty = )`** switches the fill to a **value-suppressing
+  uncertainty palette** (Correll, Moritz & Heer 2018): the value range contracts
+  as uncertainty rises, so an uncertain estimate cannot claim an extreme colour,
+  and the legend becomes the value x uncertainty grid.
+* **`rate_check()`** flags rates computed over denominators too small to trust,
+  and **`smooth_rates()`** shrinks them toward the global rate by
+  empirical-Bayes. On a five-country example Tuvalu's rate shrinks from 2.7e-4
+  to 5.9e-5 at a weight of 0.08, while China's is untouched at 0.9999.
+* **`interpolate_missing()`** fills panel gaps and **flags every value it
+  invents, non-optionally**. Gaps longer than `max_gap` are left alone, because
+  interpolating across a decade is not interpolation. `world_map()` reads the
+  flag and notes it in the caption.
+* **`projection_distortion()`** measures what a projection does, numerically.
+  It cross-validates: every equal-area projection reads exactly 1.000 areal
+  distortion, Mercator reads 4.4 mean and 132 max, and Mercator alone reads
+  ~0 degrees angular.
+
+## Projections you can interrogate
+
+* **`projection_info()`** returns the property table for all thirteen
+  projections: construction family, equal-area, conformal, the PROJ string, and
+  a note on what each is good for. `subset(projection_info(), equal_area)` is
+  the short answer to "what may I safely use for a choropleth".
+* **`projection_compare()`** draws one choropleth under several projections at
+  once, holding the data and the classification fixed so only the CRS varies.
+* **`tissot_map()`** draws Tissot's indicatrix -- circles of equal ground radius
+  projected with everything else. On Mercator they stay round and grow
+  enormously; on Equal Earth they hold their area and shear. It makes the
+  package's honesty claim visible rather than asserted.
+* Equal Earth is now documented as the recommended default for world thematic
+  maps, with the Savric, Patterson & Jenny (2019) citation. The default itself
+  is unchanged.
+
+## Provenance
+
+* **`map_provenance()`** reports what went into a map -- package version,
+  snapshot year, geometry backend, projection, classification and its breaks,
+  fill column, and countries shown versus missing. Every one of those is already
+  known at plot time; this makes it readable. **Every** map verb records it, not
+  just `world_map()`: a provenance feature that covers some of the verbs is
+  worse than none, because the gap only shows up when someone relies on it.
+* **`inst/CITATION`** credits the package *and* the sources it reconciles:
+  `countrycode` (Arel-Bundock, Enevoldsen & Yetman 2018), the World Bank,
+  Natural Earth, and the papers behind Equal Earth, the classification guidance,
+  value-by-alpha and Moran's I. `citation("countryatlas")` now produces the full
+  set.
+
+## Flows, reporting and subnational
+
+* **`flow_matrix()`**, **`country_network()`** and **`od_map()`** turn a
+  bilateral table into a matrix, a network summary, or small multiples -- the
+  answer to the arc map's problem, which is that past a few dozen flows
+  `flow_map()` is a plate of spaghetti.
+* **`country_factsheet()`** and **`world_table()`** are the last mile for the
+  audience that wanted a table. `world_table()` uses `gt` when it is installed
+  and a tibble otherwise.
+* **`standardize_subnational()`**, **`nuts_geometry()`** and
+  **`subnational_map()`** go one level below the country, scoped to where a
+  maintained code system and free geometry both exist. There is no admin2, no
+  bundled boundary data, and no attempt to pretend a French departement and a US
+  state are the same kind of object.
+
+## Cartograms, projections and renderers
+
+* **`gridded_cartogram()`** allocates one cell per N people by largest
+  remainder, so the reader can count. **`cartogram_diagnostics()`** reports the
+  residual area error, because cartograms fail quietly -- on the bundled
+  snapshot the default contiguous cartogram leaves Greenland 371x too large.
+* `cartogram_map(type = "flow")` routes to `cartogramR`'s Gastner-Seguy-More
+  algorithm. Each `type` now gates only on the package it actually needs.
+* **`interactive_map(engine = "mapgl")`** renders through MapLibre GL, and
+  **`globe_map(interactive = TRUE)`** turns the static orthographic globe into
+  one you can spin with the mouse.
+* **`world_map(engine = "tmap")`** is an alternative static renderer for people
+  already working in tmap. The package stays ggplot2-native; this is a door, not
+  a second front door.
+* `world_query()` gains `layer`, `facet`, `size` and `n_bins`, so the
+  database-side path can express bubbles, binning and small multiples.
+
+## Deprecations
+
+* **`wdj_overrides()`** now warns. It has been soft-deprecated since 2.0.0, but
+  an interactive-only note never reaches the scripts still calling it. Use
+  `country_overrides()`; the two return the same table.
+* **`?wdj_overrides` now says it is deprecated.** The code started warning in
+  this release, but the shared help page still described `wdj_overrides()` as
+  "a backward-compatible alias" and its examples called it twice -- so the one
+  place a reader goes to check was describing the previous release's behaviour,
+  and running the documented examples emitted the deprecation warning. The
+  examples now use `country_overrides()`.
+* **`options(countryatlas.gdp_compat = TRUE)`** now warns. The
+  `gdp_per_capita_2015` alias dates from 1.0.0 and will be removed.
+
+## Other changes
+
+* **New `remove_country_source()`.** `register_country_source()` had no
+  counterpart, so registering was permanent for the session: anything that
+  registered a source -- an example, a test, an exploratory script -- left
+  `country_sources()` reporting different rows for the rest of the session with
+  no way back. Removing a source also drops its memoised answers, so
+  re-registering the same name cannot serve results from the function that was
+  just removed. The five built-in sources are protected.
+* **The persistent World Bank cache now expires and is size-capped.** It used
+  `memoise::cache_filesystem()`, which has neither, so the directory grew
+  without bound for the life of the installation -- while CRAN policy allows a
+  cache under `tools::R_user_dir()` only if "sizes are kept as small as
+  possible and the contents are actively managed (including removing outdated
+  material)". It now uses `cachem::cache_disk()`: entries expire after 30 days
+  and the least-recently-used go once the directory passes 50 MB, both
+  adjustable with `options(countryatlas.cache_max_age = )` and
+  `options(countryatlas.cache_max_size = )`. Expiry also matters on the merits,
+  since World Bank observations are revised. Entries written by earlier
+  versions are swept once, and a corrupt entry is now silently re-fetched
+  rather than warned about and left in place. `cachem` is an unconditional
+  dependency of `memoise`, so this adds nothing to install.
+* **`clear_country_cache()` can now release the geometry caches.** Called with
+  no `source` it also drops the Natural Earth `sf` layer held per scale (tens
+  of megabytes at `scale = "medium"`) and the memoised `map_data("world")`
+  tibble (~99,000 rows per override set). Those are the largest things the
+  package keeps in memory and there was no API to release them; in a Shiny app
+  or a plumber process they were held for the life of the process. Naming a
+  `source` leaves geometry alone. Relatedly, `world_polygons` is memoised in
+  `.onLoad()` rather than at build time, which is both memoise's own guidance
+  and what makes the cache reachable.
+* **`add_indicator()` no longer claims "only what you need is fetched".** True
+  for `comtrade`, partly true for `wdi`, and false for `owid`, `eurostat` and
+  `oecd`, which download the full dataset and filter locally -- so
+  `add_indicator(one_row, "owid", "life-expectancy")` transfers every country
+  and year to keep one value. `?add_indicator` now says which is which.
+* **`?map_provenance` listed 15 of the verbs that carry provenance.**
+  `od_map()`, `subnational_map()`, `projection_compare()` and
+  `world_map(engine = "tmap")` also carry it; `tissot_map()` is the one map
+  verb that carries none, and now says so. A test loops over every verb and
+  asserts the provenance names the column the caller asked about.
+* **`?historical_geometry` did not document `owner` or `capname`**, which it
+  returns when the installed `cshapes` supplies them. `owner` is what makes
+  `dependencies = TRUE` legible, so it is worth naming.
+* **`?country_groups_tbl` gives the membership date.** It pointed at the
+  package `NEWS` for the reference date, where two different dates were on
+  record; the Rd now states 2026-06-01 and documents the `as_of` attribute
+  that carries it in code. An Rd should not delegate a fact to a changelog.
+* **`?disputed_territories` says that nothing in the package reads
+  `administered_by` or `claimed_by`.** `dispute_layer()` and `dispute_note()`
+  key on `iso3c` alone; the party columns are for your own filtering, and are
+  documented precisely so such a filter is writable.
+* **The `README` computes the count it quotes.** "42 of 215 countries silently
+  vanish" was hard-coded prose next to a figure built from a live fetch, so it
+  drifted as the World Bank revised its coverage -- by the time anyone checked
+  it was 37 of 210. Both now come from one computation.
+* **`stats`, `utils`, `tools`, `grDevices` and `parallel` are declared in
+  `Imports`.** They were called with `::` and not declared. Base-priority
+  packages are exempt from the undeclared-`::` check, so this was never a check
+  finding; declaring them is conventional and removes any dependence on how
+  that exemption is treated in future R.
+* **Two reads of `ggplot` internals are isolated.** ggplot2 4.0.0 moved
+  `ggplot` to S7 with `@` accessors and a compatibility layer over `$`.
+  `animate_world()` now reads the title with `ggplot2::get_labs()` where
+  available, and `cartogram_map()` stores its frame in an attribute so
+  `cartogram_diagnostics()` need not reach into the plot's data slot at all.
+* **Build-time validation that only reported.** `?country_groups_history` says
+  the table "is validated at build time against `country_groups_tbl`"; the
+  script compared, `message()`d a mismatch, and wrote the `.rda` anyway, so a
+  disagreement scrolled past in a build log -- and `NEWS` records that this
+  drift has already bitten once. It is a hard `stop()` now, accumulating every
+  mismatch first, and it reads the snapshot from the working tree rather than
+  from the installed package (which would compare the new table against the
+  *previous* release's snapshot). `world_snapshot`'s assembly gained
+  `relationship = "one-to-one"` and a uniqueness assertion, and
+  `disputed_territories` now validates `administered_by` / `claimed_by`
+  against its documented six placeholders in both directions.
+* **`country_meta$area_km2` is anchored to real areas.** The formula that
+  produced it lived in `data-raw/` as a copy of the package's
+  `ring_area_km2()` that had silently missed the antimeridian fix -- and
+  nothing pinned the column numerically, the only assertions being `> 0` and
+  ">90% non-NA", both of which a 179x-inflated value passes. The copies are
+  reunited, the build script self-checks against the analytic area for an
+  equatorial square, a wrapped square and a polar cap, and the shipped values
+  are checked against ten known country areas. (The shipped values were
+  correct; nothing had established that.) `data-raw/overrides_snapshot.R`'s
+  copy of the override table is likewise pinned to the package's.
+* **The CI matrix gained a `_R_CHECK_DEPENDS_ONLY_` leg.** All five existing
+  legs install every `Suggests`, so none of them ran the configuration CRAN
+  actually runs -- which is how a broken `\link{}` to a Suggests-only topic
+  reached a release. The Linux legs also generate `tr_TR.UTF-8`, so the
+  Turkish-dotless-i hardening that broke 2.0.0 on CRAN's Fedora flavours is
+  actually exercised rather than skipped.
+* **The silence policy covers every offline verb.** It enforced "a correct
+  call to any verb is completely silent" for 39 of 102 exports, and every
+  warning bug found in the pre-release review sat in the gap. It now covers 32
+  more, plus the cross-product of `world_map()`'s `na_style` / `disputes` /
+  `style` arguments and a zero-row leg for the rate verbs -- which is what
+  found the `deflate()` and `rate_check()` bugs above.
+* **The *Honest maps* vignette named two countries that contiguity weights do
+  not drop.** Its island list included the United Kingdom and Indonesia, but the
+  UK keeps its land border with Ireland and Indonesia keeps its borders with
+  Malaysia, Papua New Guinea and Timor-Leste -- so neither is excluded. A
+  vignette about maps quietly misleading, quietly misleading. Corrected, and it
+  now uses the two as the illustration that you cannot tell from the finished
+  map who dropped out.
+* **Two more vignette claims corrected.** *Getting started* called
+  `world_snapshot$countries$income` "an ordered factor"; it is a plain factor
+  whose levels are in income order, built that way deliberately in `data-raw/`,
+  and `is.ordered()` is `FALSE`. *countryatlas and ggsql* said `DRAW spatial`
+  arrived at ggsql 0.4.0 while three places in `R/` said 0.4.1 -- both are true
+  of different components, but read together they were a contradiction, so the
+  engine and the R package are now named separately.
+* Every vignette's prose claims are pinned by tests. Three were already; the
+  four added or rewritten since then were not, which is how the errors above
+  survived. The README's are pinned too, including that its verb table covers
+  every non-deprecated export.
+* `as_of` documents what a bare year means. It resolves to 1 January, so
+  `in_group("Croatia", "EU", as_of = 2013)` is `FALSE` -- Croatia joined that
+  July. The convention was always this; only the documentation was silent, and
+  the examples all sat far from a boundary. Pass `"YYYY-MM-DD"` when the month
+  matters.
+* Every figure in the vignettes now carries alt text, so the pkgdown site and
+  the rendered articles are readable with a screen reader.
+* The `geom_country_labels()` example labelled all 188 countries at once, which
+  made `ggrepel` drop every one of them; it now shows the two idioms that work
+  -- selecting a subset through `data`, and zooming in.
+* Documentation and vignettes zoom with `coord_quickmap()` rather than
+  `coord_cartesian()`. Both replace the map's coordinate system, but only the
+  former keeps the latitude-dependent aspect ratio, so the Europe inset was
+  being drawn without any fixed aspect at all.
+* `DESCRIPTION` declares `Language: en-GB`, and `inst/WORDLIST` records the
+  package's technical vocabulary, so the CRAN spell check reports real typos
+  instead of 300 false positives.
+
+* `common_indicators` gains the two price-conversion series `deflate()` and
+  `to_ppp()` reach for by default.
+* `inst/CITATION` credits the new methods: Anselin, Geary, Getis-Ord, Correll et
+  al., Phillips-Sul, Gastner-Seguy-More and Schvitz et al. alongside the
+  existing set.
+* The mean Earth radius is one shared constant rather than three literals.
+* A bad `projection` or `scale` now says which argument it means. Both were
+  validated by `match.arg()` inside a shared helper, which produces R's
+  anonymous `'arg' should be one of ...` -- naming neither the argument nor the
+  function the user called. Seventeen exported functions take `projection` and
+  nine take `scale`, so one poor message was reachable a great many ways.
+* `Suggests` grows to 41 packages. That is heavy, and it is the price of a light
+  core: nothing here is needed to install the package or to draw a choropleth.
+
 # countryatlas 2.0.1
 
 A patch release. The only behaviour change is to a test and to where an optional
@@ -48,18 +3021,18 @@ A major release that wires countryatlas into the database-rendering world via
 by auditing 1.0.0. The version is bumped to 2.0.0 because the bug fixes change
 the output of `world_map()` (quantile binning), `bubble_map()` / `flow_map()`
 (de-duplicated symbols), `geom_country_labels()` (label placement) and
-`convert_country()` (override-only entities) — code that depended on the old
+`convert_country()` (override-only entities), so code that depended on the old
 behaviour may see different maps or values.
 
 ## New: database-side rendering with ggsql
 
 * `as_ggsql_source()` exports a curated, ISO-reconciled, WDI-joined table (with
-  `sf` geometry WKB-encoded) as a [ggsql](https://ggsql.org) source — a DuckDB
+  `sf` geometry WKB-encoded) as a [ggsql](https://ggsql.org) source: a DuckDB
   connection, a Parquet file, or a nanoarrow stream. countryatlas does the
   reconciliation ggsql's static bundled world can't; ggsql does the database
   push-down and Vega-Lite output countryatlas doesn't.
 * `world_query()` emits a `ggsql` spatial query (`VISUALISE … DRAW spatial
-  PROJECT TO … SCALE … LABEL …`) — a dependency-free string builder.
+  PROJECT TO … SCALE … LABEL …`), a dependency-free string builder.
 * `interactive_map(engine = "ggsql")` registers the data and renders the map in
   DuckDB, returning a Vega-Lite widget.
 * `ggsql`, `duckdb`, `DBI` and `nanoarrow` are optional `Suggests`. See the new
@@ -67,61 +3040,61 @@ behaviour may see different maps or values.
 
 ## New: maps, projections and helpers
 
-* `globe_map()` — an orthographic globe choropleth, with `backend = "sf"`
+* `globe_map()`: an orthographic globe choropleth, with `backend = "sf"`
   (smoothest limb) or `backend = "polygon"` (needs only `maps` + `mapproj`).
-* `spin_globe()` — a rotating-globe animated GIF (one `globe_map()` frame per
+* `spin_globe()`: a rotating-globe animated GIF (one `globe_map()` frame per
   central longitude, assembled with `gifski` or `magick`).
-* `facet_map()` — small-multiple choropleths (the static counterpart to
+* `facet_map()`: small-multiple choropleths (the static counterpart to
   `animate_world()`).
 * `wdj_crs()` gains eight projections (`mercator`, `winkel_tripel`, `eckert4`,
   `gall_peters`, `orthographic`, `azimuthal_equal_area`, `north_polar`,
   `south_polar`); `world_map()` / `world_geometry()` accept them all.
-* `locate_country()` — point-in-polygon lookup tagging `lon`/`lat` with `iso3c`.
-* `repair_country_names()` — the "act on it" companion to
+* `locate_country()`: point-in-polygon lookup tagging `lon`/`lat` with `iso3c`.
+* `repair_country_names()`: the "act on it" companion to
   `check_country_match()`: auto-applies confident string-distance fixes.
-* `country_join_all()` — reduce-join many messy country tables on the ISO spine.
-* `growth_rate()`, `index_to()`, `share_of_world()` — panel analysis helpers.
-* `country_overrides()` — preferred name for `wdj_overrides()` (kept as an
+* `country_join_all()`: reduce-join many messy country tables on the ISO spine.
+* `growth_rate()`, `index_to()`, `share_of_world()`: panel analysis helpers.
+* `country_overrides()`: preferred name for `wdj_overrides()` (kept as an
   alias) after the rename to countryatlas.
 * `country_groups_tbl` gains `Mercosur`, `GCC`, `Nordic` and `Visegrad`.
-* `country_borders()` — a tidy adjacency edge list built from polygon topology
+* `country_borders()`: a tidy adjacency edge list built from polygon topology
   (`sf::st_touches()`), with `neighbors()` for a vectorised per-country lookup.
-* `distance_between()` — great-circle (haversine) distance between two
+* `distance_between()`: great-circle (haversine) distance between two
   countries' centroids; needs neither `sf` nor the network.
-* `dorling_map()` — the Dorling cartogram promoted to a first-class verb, with
+* `dorling_map()`: the Dorling cartogram promoted to a first-class verb, with
   `k`/`itermax` tuning; `cartogram_map()` itself gains `...` passthrough to the
   underlying `cartogram::cartogram_*()` call.
 
 ## New: historical entities, inequality and spatial statistics
 
-* `historical_codes` — a curated, dated crosswalk of dissolved entities
+* `historical_codes`: a curated, dated crosswalk of dissolved entities
   (Soviet Union, Yugoslavia, Czechoslovakia, East Germany, Netherlands
   Antilles, North/South Yemen, pre-2011 Sudan, United Arab Republic,
   Tanganyika/Zanzibar, North/South Vietnam, Serbia and Montenegro) to their
   successor states, with retired ISO codes where they existed. Kosovo is
   included among the Yugoslav successors on a territory basis (documented).
-* `dissolve_country()` — resolve a mixed vector of historical *and* modern
+* `dissolve_country()`: resolve a mixed vector of historical *and* modern
   names to successor `iso3c` rows (one-to-many, dated); modern names pass
   through as single rows, so a whole messy column pipes in unchanged.
 * `check_country_match()` gains a `historical` column. It flags dissolved
-  entities **even when countrycode "matches" them** — the headline case is
+  entities **even when countrycode "matches" them**. The headline case is
   `"USSR"`, which countrycode silently resolves to Russia's `RUS`, so
   Soviet-era data becomes Russian data with no warning.
-* `correlate_indicators()` — pairwise indicator correlations on the spine
+* `correlate_indicators()`: pairwise indicator correlations on the spine
   (pearson/spearman, pairwise-complete, per-pair `n`), tidy long output.
-* `beta_convergence()` / `sigma_convergence()` — the two standard convergence
+* `beta_convergence()` / `sigma_convergence()`: the two standard convergence
   diagnostics: the growth-on-initial-level regression (with implied
   convergence speed and half-life) and per-year cross-country dispersion.
-* `gini()` and `theil()` — inequality across countries, population-weightable;
+* `gini()` and `theil()`: inequality across countries, population-weightable;
   `theil()` decomposes exactly into between/within components when a grouping
   (continent, income) is supplied.
-* `lag_by_country()` / `diff_by_country()` — panel lag and difference grouped
+* `lag_by_country()` / `diff_by_country()`: panel lag and difference grouped
   by `iso3c` and ordered by `year`, completing the panel toolkit around
   `growth_rate()` / `index_to()` / `complete_years()`.
-* `morans_i()` — global Moran's I with a permutation pseudo-p-value, computed
+* `morans_i()`: global Moran's I with a permutation pseudo-p-value, computed
   on the row-standardised `country_borders()` adjacency. No `spdep`
   dependency: the weights come from the package's own curated topology.
-* `spike_map()` — triangular spikes at country centroids (height ∝ value), the
+* `spike_map()`: triangular spikes at country centroids (height ∝ value), the
   overplotting-resistant cousin of `bubble_map()`; needs only `maps`.
 * `convert_country()` accepts `to = "name_<lang>"` (`"name_fr"`, `"name_es"`,
   `"name_zh"`, …) for localized country names via countrycode's CLDR tables.
@@ -231,7 +3204,7 @@ behaviour may see different maps or values.
   base map (off the map). The base map and bubbles now share one projected CRS
   via `coord_sf()`.
 * Polygon centroids returned more than one row for ten `iso3c` codes (overrides
-  map several names — Azores/Madeira → PRT — to one code), fanning out joins in
+  map several names, such as Azores/Madeira → PRT, to one code), fanning out joins in
   `bubble_map()` / `flow_map()`. Centroids are now one antimeridian-safe row per
   country (the largest piece).
 * `geom_country_labels()` placed labels at the bounding-box midpoint over all of
@@ -246,13 +3219,13 @@ behaviour may see different maps or values.
   derives every other destination from that.
 * Kosovo's `XKX` needed extra care: it has no row at all in
   `countrycode::codelist`, so deriving destinations purely via the `iso3c`
-  round-trip above is `NA` for everything — which would have *regressed*
+  round-trip above is `NA` for everything, which would have *regressed*
   `flag`/`region`/`country`, since 1.0.0 already resolved those via direct
   name matching (verified against the actual 1.0.0 code). `convert_country()`
   now recovers from the original name when the `iso3c` round-trip comes back
   empty, and fills `iso2c`/`continent` (which neither path classifies) from
   the same curated fallback `standardize_country()` uses. Net effect versus
-  1.0.0: zero regressions, plus newly-working `continent`/`iso2c` for Kosovo —
+  1.0.0: zero regressions, plus newly-working `continent`/`iso2c` for Kosovo,
   which also fixes `locate_country(..., add = "continent")` for points inside
   it.
 * `interactive_map(..., tooltip = )` was accepted but silently ignored by every
@@ -1127,7 +4100,7 @@ behaviour may see different maps or values.
   skipping in that configuration; they now share a `skip_if_no_sf_geometry()`
   helper.
 * New hex logo, drawn by the package itself (`data-raw/hex_logo.R`): an
-  orthographic globe — `globe_map()`'s projection — carrying a viridis
+  orthographic globe (`globe_map()`'s projection) carrying a viridis
   choropleth of `world_snapshot` GDP per capita on Natural Earth geometry
   joined by `attach_geometry()`, with `spike_map()`-style population spikes
   rising off the horizon and the binned-legend swatches under the wordmark.
@@ -1388,8 +4361,8 @@ behaviour may see different maps or values.
 
 A single, comprehensive release that takes the package from a one-function proof
 of concept to a complete toolkit for joining world data to maps. The spirit is
-unchanged — *ISO codes as the universal join key, one call to a map-ready
-table* — but pushed to its full potential.
+unchanged (*ISO codes as the universal join key, one call to a map-ready
+table*) but pushed to its full potential.
 
 ## Breaking-ish changes
 
@@ -1409,8 +4382,8 @@ table* — but pushed to its full potential.
 * `world_data()` gains `indicator` (one or many WDI codes; named vectors drive
   clean column names), multi-year **panels**, an `sf` backend
   (`geometry = "sf"`), `region` subsetting, `latest`, projections and caching.
-* `country_data()` — the lightweight, one-row-per-country analysis table.
-* `world_geometry()` — projected, region-subset geometry (countries, centroids,
+* `country_data()`: the lightweight, one-row-per-country analysis table.
+* `world_geometry()`: projected, region-subset geometry (countries, centroids,
   coastline, borders, graticule, ocean).
 
 ## New: the join engine (exposed for *your* data)
@@ -1419,7 +4392,7 @@ table* — but pushed to its full potential.
 
 ## New: diagnostics
 
-* `check_country_match()`, `wdj_overrides()`, `audit_coverage()` — never lose a
+* `check_country_match()`, `wdj_overrides()`, `audit_coverage()`: never lose a
   country silently.
 
 ## New: reference data & translation
@@ -1453,6 +4426,21 @@ table* — but pushed to its full potential.
 * Namespace hygiene (targeted `@importFrom` instead of blanket `@import`).
 * Input validation with friendly `cli` / `rlang` errors.
 * A `testthat` (3e) suite; network calls are skipped offline and on CRAN.
+* Algebraic invariants alongside the closed-form anchors. An anchor pins one
+  value, which a wrong divisor can still satisfy for a single input; these pin
+  the relationships instead -- shares summing to one within each year,
+  `per_capita()` multiplying back to the original value, a deflator equal to
+  the base year and a PPP factor of one being identities, compounding
+  `growth_rate()` walking the series back out, `index_to()` landing exactly on
+  `to` at the base year, ranks forming a permutation, and `gini()`/`theil()`
+  reaching their analytic bounds and staying scale-free.
+* The test run is kept out of the checking account's file space, so
+  `R CMD check` cannot report "new files in some other directories" -- the NOTE
+  CRAN raised against 1.0.0. The redirect now sets `R_USER_CACHE_DIR` as well
+  as `XDG_CACHE_HOME`: `tools::R_user_dir(pkg, "cache")` reads the former
+  first, so setting only the fallback left the redirect at the mercy of the
+  machine, and wherever `R_USER_CACHE_DIR` happened to be set a suggested
+  package's cache still escaped to the real user directory.
 * Vignettes and a `pkgdown` site.
 * Refreshed CI: R-CMD-check, test-coverage and pkgdown workflows.
 * Heavy spatial dependencies (`sf`, `rnaturalearth`, `cartogram`, `biscale`,

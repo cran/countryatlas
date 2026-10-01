@@ -41,6 +41,7 @@ test_that("repair_country_names fixes confident misses", {
 })
 
 test_that("convert_country routes overrides through iso3c for all destinations", {
+  skip_slow_on_cran()
   expect_equal(convert_country("Canary Islands", to = "iso3c"), "ESP")
   expect_equal(convert_country("Canary Islands", to = "continent"), "Europe")
   expect_equal(convert_country(c("Japan", "Brazil"), to = "flag"),
@@ -76,6 +77,7 @@ test_that("convert_country routes overrides through iso3c for all destinations",
 })
 
 test_that("convert_country(warn = TRUE) actually warns about misses", {
+  skip_slow_on_cran()
   # It used to be a no-op: every internal countrycode() call is wrapped in
   # suppressWarnings(), so `warn` never reached the user.
   expect_warning(convert_country("Wakanda", to = "continent"),
@@ -102,7 +104,10 @@ test_that("new country groups are present and correctly sized", {
 })
 
 test_that("country_overrides is an alias of wdj_overrides", {
-  expect_identical(country_overrides(), wdj_overrides())
+  # wdj_overrides()'s deprecation note is .frequency = "once", so whether it
+  # fires here depends on which test file ran first. Assert the alias, and let
+  # test-reference.R assert that the replacement itself stays silent.
+  expect_identical(country_overrides(), suppressWarnings(wdj_overrides()))
   expect_equal(unname(country_overrides(c(Somaliland = "SOM"))[["Somaliland"]]),
                "SOM")
 })
@@ -127,13 +132,23 @@ test_that("spin_globe needs a gif encoder", {
   # Without gifski/magick it should fail fast, before rendering any frame.
   skip_if(requireNamespace("gifski", quietly = TRUE) ||
             requireNamespace("magick", quietly = TRUE))
+  # Pinned to the encoder gate: unpinned, a mistyped column or any other
+  # early failure would satisfy this, and the block only runs when both
+  # encoders are absent.
   expect_error(
     spin_globe(world_snapshot$countries, continent, backend = "polygon",
-               n_frames = 2L)
+               n_frames = 2L),
+    class = "rlib_error_package_not_found"
+  )
+  expect_error(
+    spin_globe(world_snapshot$countries, continent, backend = "polygon",
+               n_frames = 2L),
+    "gifski"
   )
 })
 
 test_that("polygon centroids are one antimeridian-safe row per iso3c", {
+  skip_slow_on_cran()
   skip_if_not_installed("maps")
   cent <- world_geometry("centroids", geometry = "polygon")
   expect_equal(anyDuplicated(cent$iso3c), 0L)
@@ -148,7 +163,9 @@ test_that("distance_between computes symmetric great-circle distances", {
   expect_equal(d1, d2)
   expect_gt(d1, 0)
   expect_lt(d1, 2000)
-  expect_true(is.na(distance_between("Wakanda", "France")))
+  expect_warning(w <- distance_between("Wakanda", "France"),
+                 "did not resolve to a country")
+  expect_true(is.na(w))
   # France is closer to Germany than to Australia.
   expect_lt(distance_between("France", "Germany"),
             distance_between("France", "Australia"))
@@ -158,13 +175,24 @@ test_that("distance_between computes symmetric great-circle distances", {
 
 test_that("country_borders and neighbors need sf", {
   skip_if(requireNamespace("sf", quietly = TRUE))
-  expect_error(country_borders())
-  expect_error(neighbors("FRA", origin = "iso3c"))
+  # Pinned to the package gate itself, not merely "it errored". With no
+  # pattern this accepted any condition at all -- a typo in the fixture, or
+  # an argument error raised before the gate was reached -- and this block
+  # only runs when the package is *absent*, which is the one configuration
+  # nobody watches. The already-pinned ggsql block below documents the same
+  # hazard. need_pkg() -> rlang::check_installed() raises
+  # "rlib_error_package_not_found".
+  expect_error(country_borders(), class = "rlib_error_package_not_found")
+  expect_error(country_borders(), "sf")
+  # neighbors() resolves the code first and only then reaches country_borders(),
+  # so this also pins that the gate is what stops it -- not name resolution.
+  expect_error(neighbors("FRA", origin = "iso3c"), class = "rlib_error_package_not_found")
+  expect_error(neighbors("FRA", origin = "iso3c"), "sf")
 })
 
 test_that("country_borders finds real neighbours (needs sf)", {
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_slow_on_cran()
+  skip_if_no_sf_geometry()
   b <- country_borders()
   expect_true(all(c("iso3c_a", "country_a", "iso3c_b", "country_b") %in% names(b)))
   expect_false(any(b$iso3c_a == b$iso3c_b))
@@ -176,8 +204,8 @@ test_that("country_borders finds real neighbours (needs sf)", {
 })
 
 test_that("neighbors looks up a country's borders (needs sf)", {
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_slow_on_cran()
+  skip_if_no_sf_geometry()
   fra <- neighbors("France")
   expect_true(all(fra$iso3c == "FRA"))
   expect_true("DEU" %in% fra$neighbor)
@@ -191,8 +219,8 @@ test_that("neighbors looks up a country's borders (needs sf)", {
 # quietly break, so pin them rather than trusting the comment.
 
 test_that("the border adjacency is irreflexive and de-duplicated", {
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_slow_on_cran()
+  skip_if_no_sf_geometry()
   b <- country_borders()
   expect_gt(nrow(b), 100L)
   expect_equal(sum(b$iso3c_a == b$iso3c_b), 0L)        # no country borders itself
@@ -209,8 +237,7 @@ test_that("neighbors() builds the adjacency once, however many countries", {
   # per country -- rather than a wall-clock assertion, which would be flaky.
   # Measured cost of getting this wrong: 0.43s for one country, 0.37s for 153,
   # so looping over them would be ~66s, about 177x a single vectorised call.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   calls <- 0L
   fake <- function(scale = "small", region = NULL) {
     calls <<- calls + 1L
@@ -236,8 +263,8 @@ test_that("neighbors() builds the adjacency once, however many countries", {
 })
 
 test_that("neighbors() is symmetric even though country_borders() is not", {
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_slow_on_cran()
+  skip_if_no_sf_geometry()
   # neighbors() returns a tibble (iso3c, neighbor, neighbor_country) -- pin the
   # shape too, since the symmetry check depends on reading the right column.
   nb <- neighbors("France")

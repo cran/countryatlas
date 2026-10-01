@@ -2,7 +2,7 @@ test_that("distance_between computes great-circle distance (no sf needed)", {
   d <- distance_between("France", "Germany")
   expect_type(d, "double")
   expect_gt(d, 0)
-  # Paris–Berlin ~ 878 km, centroids should be in that ballpark
+  # Paris-Berlin ~ 878 km, centroids should be in that ballpark
   expect_gt(d, 500)
   expect_lt(d, 1500)
 })
@@ -20,7 +20,10 @@ test_that("distance_between resolves via iso3c", {
 })
 
 test_that("distance_between returns NA for unknown countries", {
-  d <- distance_between("France", "Atlantis")
+  # And says so: a value that resolves to no country is a mistake, unlike a
+  # country that resolves but has no bundled centroid, which stays quiet.
+  expect_warning(d <- distance_between("France", "Atlantis"),
+                 "did not resolve to a country")
   expect_true(is.na(d))
 })
 
@@ -31,24 +34,54 @@ test_that("distance_between works on vectors of length 1 (no recycling)", {
 })
 
 test_that("locate_country tags known capitals", {
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   out <- locate_country(lon = c(2.35, -74.0, 139.7), lat = c(48.85, 40.7, 35.7))
   # Paris, New York, Tokyo
   expect_equal(out$iso3c, c("FRA", "USA", "JPN"))
   expect_equal(out$country, c("France", "United States", "Japan"))
 })
 
+test_that("locate_country gives a point the same answer whatever it is with", {
+  skip_slow_on_cran()
+  skip_if_no_sf_geometry()
+  # st_nearest_points()'s pairing argument is `pairwise`; this asked for
+  # `by_element`, which sf absorbs into `...` and ignores, so the snap-back
+  # step got the length(miss)^2 cross product and measured each unmatched
+  # point against some *other* point's country. One missed point was safe
+  # (1x1 == pairwise), so every single-point example passed and only
+  # multi-point calls were wrong -- in either direction, since a bogus
+  # distance under the tolerance would have snapped a point to a country it
+  # is not in.
+  cm <- countryatlas::country_meta
+  cm <- cm[!is.na(cm$centroid_lon) & !is.na(cm$centroid_lat), ]
+
+  batch <- locate_country(cm$centroid_lon, cm$centroid_lat)$iso3c
+  alone <- vapply(seq_len(nrow(cm)), function(i) {
+    v <- locate_country(cm$centroid_lon[i], cm$centroid_lat[i])$iso3c
+    if (length(v) != 1L) NA_character_ else as.character(v)
+  }, character(1))
+  expect_equal(batch, alone)
+
+  # Cuba is the concrete case: its centroid is ~10.8 km off the 110m
+  # coastline, so it always needs the snap. In a multi-miss call it used to be
+  # measured against American Samoa and dropped to NA.
+  cu <- cm[cm$iso3c == "CUB", ]
+  expect_equal(locate_country(cu$centroid_lon, cu$centroid_lat)$iso3c, "CUB")
+  expect_equal(batch[cm$iso3c == "CUB"], "CUB")
+
+  # Open ocean must still be NA even in a call where other points miss.
+  mixed <- locate_country(c(cu$centroid_lon, 0, -140), c(cu$centroid_lat, 0, 0))
+  expect_equal(mixed$iso3c, c("CUB", NA, NA))
+})
+
 test_that("locate_country returns NA for open ocean", {
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   out <- locate_country(lon = -30, lat = -30)   # open Atlantic
   expect_true(is.na(out$iso3c))
 })
 
 test_that("locate_country supports extra attributes", {
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   out <- locate_country(lon = 2.35, lat = 48.85, add = c("country", "continent"))
   expect_equal(out$country, "France")
   expect_equal(out$continent, "Europe")
@@ -60,8 +93,8 @@ test_that("locate_country errors on mismatched lon/lat lengths", {
 })
 
 test_that("locate_country snaps coastal points but leaves open ocean NA", {
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_slow_on_cran()
+  skip_if_no_sf_geometry()
   # New York sits ~0.5 km outside the coarse 110m US coastline: the default
   # tolerance snaps it to the US, strict mode (tolerance_km = 0) does not.
   expect_equal(locate_country(lon = -74.0, lat = 40.7)$iso3c, "USA")
@@ -71,8 +104,8 @@ test_that("locate_country snaps coastal points but leaves open ocean NA", {
 })
 
 test_that("country_borders returns a tidy edge list", {
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_slow_on_cran()
+  skip_if_no_sf_geometry()
   edges <- country_borders()
   expect_s3_class(edges, "tbl_df")
   expect_true(all(c("iso3c_a", "country_a", "iso3c_b", "country_b") %in% names(edges)))
@@ -86,15 +119,15 @@ test_that("country_borders returns a tidy edge list", {
 })
 
 test_that("country_borders never lists a country bordering itself", {
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_slow_on_cran()
+  skip_if_no_sf_geometry()
   edges <- country_borders()
   expect_false(any(edges$iso3c_a == edges$iso3c_b))
 })
 
 test_that("neighbors lists a country's bordering countries", {
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_slow_on_cran()
+  skip_if_no_sf_geometry()
   nbr <- neighbors("France")
   expect_s3_class(nbr, "tbl_df")
   expect_true("DEU" %in% nbr$neighbor)
@@ -102,15 +135,14 @@ test_that("neighbors lists a country's bordering countries", {
 })
 
 test_that("neighbors returns zero rows for islands", {
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_slow_on_cran()
+  skip_if_no_sf_geometry()
   nbr <- neighbors("Japan")
   expect_equal(nrow(nbr), 0)
 })
 
 test_that("locate_country names Kosovo (XKX has no countrycode row)", {
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   out <- locate_country(lon = 20.9, lat = 42.6, add = c("country", "continent"))
   expect_equal(out$iso3c, "XKX")
   expect_equal(out$country, "Kosovo")
@@ -118,8 +150,8 @@ test_that("locate_country names Kosovo (XKX has no countrycode row)", {
 })
 
 test_that("country_borders names every endpoint, Kosovo included", {
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_slow_on_cran()
+  skip_if_no_sf_geometry()
   edges <- country_borders()
   expect_false(anyNA(edges$country_a))
   expect_false(anyNA(edges$country_b))
@@ -128,11 +160,11 @@ test_that("country_borders names every endpoint, Kosovo included", {
 })
 
 test_that("world_geometry('coastline') works in every projection", {
+  skip_slow_on_cran()
   # Two Natural Earth rings are invalid once projected, and st_union() (unlike
   # the predicates) refuses them outright: the coastline used to error with
   # "TopologyException: side location conflict" in all but plate_carree.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   for (proj in c("equal_earth", "robinson", "mollweide", "mercator",
                  "plate_carree", "orthographic")) {
     cl <- world_geometry("coastline", geometry = "sf", projection = proj)
@@ -147,8 +179,7 @@ test_that("world_geometry('coastline') works in every projection", {
 test_that("world_geometry accepts a bounding-box region on the sf backend", {
   # Regression: st_crop() under the strict S2 engine rejected Natural Earth's
   # self-intersecting rings, so region = c(xmin, ymin, xmax, ymax) errored.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   eur <- world_geometry("countries", geometry = "sf",
                         region = c(-10, 35, 30, 60))
   expect_s3_class(eur, "sf")
@@ -159,6 +190,7 @@ test_that("world_geometry accepts a bounding-box region on the sf backend", {
 })
 
 test_that("polygon_centroids returns one centroid per iso3c", {
+  skip_slow_on_cran()
   # Bug 3.3: PRT / ESP / BES must each produce ONE row, not multiple.
   skip_if_not_installed("maps")
   poly <- countryatlas:::world_polygons()
@@ -172,6 +204,7 @@ test_that("polygon_centroids returns one centroid per iso3c", {
 })
 
 test_that("attach_geometry threads custom overrides into geometry matching", {
+  skip_slow_on_cran()
   # Regression: world_data(overrides=) / attach_geometry(overrides=) were
   # accepted but silently ignored -- the geometry backend always matched with
   # the default override set. A custom set must now actually take effect.
@@ -206,9 +239,8 @@ test_that("attach_geometry drops rows the backend has no geometry for", {
 })
 
 test_that("sf coverage is monotone in scale, and medium beats small", {
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
-  skip_if_not_installed("rnaturalearthdata")
+  skip_slow_on_cran()
+  skip_if_no_sf_geometry()
   codes <- function(sc) {
     unique(stats::na.omit(countryatlas:::get_world_sf(scale = sc,
                                                      project = FALSE)$iso3c))
@@ -232,9 +264,8 @@ test_that("sf coverage is monotone in scale, and medium beats small", {
 # it. The layer drew nothing, in every projection.
 
 test_that("every what value returns a real sf object", {
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
-  skip_if_not_installed("rnaturalearthdata")
+  skip_slow_on_cran()
+  skip_if_no_sf_geometry()
   for (w in c("countries", "centroids", "coastline", "borders", "graticule",
               "ocean")) {
     o <- world_geometry(w, geometry = "sf")
@@ -246,9 +277,8 @@ test_that("every what value returns a real sf object", {
 })
 
 test_that("the ocean layer actually covers the map", {
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
-  skip_if_not_installed("rnaturalearthdata")
+  skip_slow_on_cran()
+  skip_if_no_sf_geometry()
   earth <- 5.1e14                                  # m^2, Earth's surface
   for (pr in c("equal_earth", "robinson", "mollweide", "eckert4",
                "gall_peters")) {
@@ -268,8 +298,8 @@ test_that("the ocean layer actually covers the map", {
 })
 
 test_that("ocean refuses the cases it cannot draw, and says why", {
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_slow_on_cran()
+  skip_if_no_sf_geometry()
   for (pr in c("orthographic", "azimuthal_equal_area", "north_polar",
                "south_polar")) {
     expect_error(world_geometry("ocean", geometry = "sf", projection = pr),
@@ -288,13 +318,13 @@ test_that("ocean refuses the cases it cannot draw, and says why", {
 })
 
 test_that("only orthographic drops the far side; the Lambert three keep it", {
+  skip_slow_on_cran()
   # ?world_geometry used to call all four azimuthal projections "hemispheric",
   # which is true of "orthographic" (+proj=ortho) alone. The other three are
   # Lambert azimuthal equal-area, which images the whole globe with the far side
   # stretched around the rim -- nothing comes back empty. The docs now say so,
   # and a reader who filters on st_is_empty() depends on the difference.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
 
   n_empty <- function(projection) {
     g <- world_geometry("countries", geometry = "sf", projection = projection)
@@ -313,15 +343,14 @@ test_that("only orthographic drops the far side; the Lambert three keep it", {
 test_that("the ISO-less Natural Earth features are documented", {
   # ?world_geometry names these as the rows that come back with iso3c NA; if a
   # future rnaturalearth changes the set, the doc has to change with it.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   g <- world_geometry("countries", geometry = "sf", scale = "small")
   expect_identical(sort(g$name_long[is.na(g$iso3c)]), "Somaliland")
 })
 
 test_that("sf centroid columns are projected units, as documented", {
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_slow_on_cran()
+  skip_if_no_sf_geometry()
   # ?world_geometry now says these are in the returned object's CRS. Pin it, so
   # nobody reads centroid_lon as a longitude by accident.
   s <- world_geometry("centroids", geometry = "sf")
@@ -336,13 +365,12 @@ test_that("sf centroid columns are projected units, as documented", {
 })
 
 test_that("no geometry layer is degenerate in any projection", {
+  skip_slow_on_cran()
   # The ocean layer was a 2-point, zero-area polygon in every projection, and
   # nothing caught it: st_bbox() reported the stored extent rather than
   # recomputing it, so every diagnostic looked healthy. Measure the geometry
   # itself, for every layer.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
-  skip_if_not_installed("rnaturalearthdata")
+  skip_if_no_sf_geometry()
   for (pr in c("equal_earth", "robinson", "mollweide", "plate_carree")) {
     for (w in c("countries", "centroids", "coastline", "borders", "graticule",
                 "ocean")) {
@@ -363,15 +391,14 @@ test_that("no geometry layer is degenerate in any projection", {
 })
 
 test_that("the countries layer is a homogeneous MULTIPOLYGON column", {
+  skip_slow_on_cran()
   # Natural Earth hands over 177 uniform MULTIPOLYGONs, but
   # st_break_antimeridian() runs an st_intersection internally that collapses a
   # single-part MULTIPOLYGON to a POLYGON -- leaving 148 POLYGON + 29
   # MULTIPOLYGON, i.e. an sfc_GEOMETRY column. sf::st_coordinates() is not
   # implemented for that, so pulling vertices out of world_geometry("countries")
   # failed, in every projection including the default.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
-  skip_if_not_installed("rnaturalearthdata")
+  skip_if_no_sf_geometry()
   for (pr in c("equal_earth", "robinson", "mollweide", "plate_carree")) {
     o <- world_geometry("countries", geometry = "sf", projection = pr)
     expect_equal(unique(as.character(sf::st_geometry_type(o))), "MULTIPOLYGON",
@@ -398,11 +425,11 @@ test_that("the countries layer is a homogeneous MULTIPOLYGON column", {
 })
 
 test_that("a hemispheric projection leaves the far side empty, not malformed", {
+  skip_slow_on_cran()
   # Orthographic hides half the globe, so those countries have no image. The
   # empty geometries are correct; recorded here so the resulting
   # st_coordinates() limitation is not mistaken for the bug fixed above.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   o <- world_geometry("countries", geometry = "sf", projection = "orthographic")
   expect_equal(unique(as.character(sf::st_geometry_type(o))), "MULTIPOLYGON")
   expect_gt(sum(sf::st_is_empty(o)), 0L)
@@ -421,9 +448,8 @@ test_that("a hemispheric projection leaves the far side empty, not malformed", {
 # so the fix applied at the source was undone downstream.
 
 test_that("simplify_geometry preserves a homogeneous geometry column", {
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
-  skip_if_not_installed("rnaturalearthdata")
+  skip_slow_on_cran()
+  skip_if_no_sf_geometry()
   g <- world_geometry("countries", geometry = "sf")
   expect_equal(unique(as.character(sf::st_geometry_type(g))), "MULTIPOLYGON")
   for (rm_present in c(TRUE, FALSE)) {
@@ -446,13 +472,12 @@ test_that("simplify_geometry preserves a homogeneous geometry column", {
 })
 
 test_that("the st_simplify fallback is CRS-independent and honours keep", {
+  skip_slow_on_cran()
   # It used to pass a fixed dTolerance of (1 - keep) * 10000, i.e. metres
   # whatever the CRS: 9 km on a projected frame, which barely simplified
   # anything, and 9000 *degrees* on a lon/lat one, where only
   # preserveTopology kept the result usable at all.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
-  skip_if_not_installed("rnaturalearthdata")
+  skip_if_no_sf_geometry()
   old_s2 <- suppressMessages(sf::sf_use_s2(FALSE))   # NE rings are s2-invalid
   on.exit(suppressMessages(sf::sf_use_s2(old_s2)), add = TRUE)
   proj <- world_geometry("countries", geometry = "sf")
@@ -483,12 +508,11 @@ test_that("the st_simplify fallback is CRS-independent and honours keep", {
 })
 
 test_that("every geometry-returning path keeps a usable geometry column", {
+  skip_slow_on_cran()
   # The invariant broke twice: st_break_antimeridian() downgraded the source
   # column (fixed in get_world_sf), and then simplify_geometry() undid the fix
   # downstream. Check the whole surface rather than the two known sites.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
-  skip_if_not_installed("rnaturalearthdata")
+  skip_if_no_sf_geometry()
   snap <- countryatlas::world_snapshot$countries
   paths <- list(
     countries  = function() world_geometry("countries", geometry = "sf"),
@@ -524,4 +548,124 @@ test_that("every geometry-returning path keeps a usable geometry column", {
     attach_geometry(snap, geometry = "sf"), keep = 0.2))
   expect_length(unique(as.character(sf::st_geometry_type(s1))), 1L)
   expect_no_error(sf::st_coordinates(s1))
+})
+
+test_that("resolve_region reads every branch off the same trimmed value", {
+  skip_slow_on_cran()
+  # Only the iso3c branch trimmed, so one trailing space produced three
+  # different outcomes: "FRA " resolved, "Europe " fell through to name
+  # matching and errored, and "EU " was silently taken as a three-letter code
+  # -- nchar is 3 and it is already uppercase -- so it reached the
+  # "unknown code at face value" branch and came back as the string "EU ".
+  # world_geometry(region = "EU ") then came back empty and said nothing, as
+  # did world_data(), attach_geometry(), join_world() and country_borders() --
+  # every public caller of this helper. (world_map() has no `region` argument;
+  # it takes geometry that is already subset.)
+  rr <- countryatlas:::resolve_region
+  NB <- intToUtf8(0xA0)
+  pad <- function(z) list(z, paste0(z, " "), paste0(z, NB), paste0(" ", z))
+
+  # The silent one: a padded group must resolve to the group, not to a code.
+  eu <- rr("EU")
+  expect_gt(length(eu), 20L)
+  for (v in pad("EU")) expect_equal(rr(v), eu)
+  for (v in pad("EU")) expect_false(identical(rr(v), v))
+
+  # Every shipped group agrees across padding forms.
+  for (grp in unique(country_groups_tbl$group)) {
+    want <- rr(grp)
+    for (v in pad(grp)) expect_equal(rr(v), want)
+  }
+
+  # Continents, codes and names likewise.
+  for (v in pad("Europe")) expect_equal(rr(v), rr("Europe"))
+  for (v in pad("FRA")) expect_equal(rr(v), "FRA")
+  for (v in pad("France")) expect_equal(rr(v), "FRA")
+  # An unknown uppercase code is still passed through, now consistently.
+  for (v in pad("ZZZ")) expect_equal(rr(v), "ZZZ")
+
+  # Unpadded behaviour is untouched.
+  expect_null(rr(NULL))
+  expect_s3_class(rr(c(-10, 35, 30, 60)), "wdj_bbox")
+  expect_error(rr(NA_character_), "must not contain missing values")
+  expect_error(rr("Nowhere"), "matched no countries")
+  expect_equal(rr(countryatlas:::wdj_known_iso3c()),
+               countryatlas:::wdj_known_iso3c())
+  # The error still quotes what the caller actually passed, untrimmed.
+  expect_error(rr("Nowhere "), "Nowhere ")
+})
+
+test_that("a padded region reaches the public callers intact", {
+  skip_slow_on_cran()
+  # resolve_region() is internal; the defect was only visible through the
+  # functions that call it, so pin it there too. Without this, the fix is
+  # asserted one level below where a user would ever meet it.
+  skip_if_no_sf_geometry()
+  NB <- intToUtf8(0xA0)
+  eu <- nrow(world_geometry("countries", geometry = "sf", region = "EU"))
+  expect_gt(eu, 20L)
+  for (v in list("EU ", " EU", paste0("EU", NB))) {
+    expect_equal(nrow(world_geometry("countries", geometry = "sf", region = v)),
+                 eu)
+  }
+  # country_borders() takes the same argument through the same helper.
+  b <- nrow(country_borders(region = "EU"))
+  expect_gt(b, 0L)
+  expect_equal(nrow(country_borders(region = "EU ")), b)
+  # And a padded continent, which used to error rather than resolve.
+  af <- nrow(world_geometry("countries", geometry = "sf", region = "Africa"))
+  expect_gt(af, 40L)
+  expect_equal(nrow(world_geometry("countries", geometry = "sf",
+                                   region = "Africa ")), af)
+})
+
+test_that("recentring splits countries at the seam without losing any", {
+  skip_slow_on_cran()
+  # Recentring rotates the world so a chosen longitude is the middle, which
+  # cuts whatever straddles the new seam. The row count therefore *grows* --
+  # Russia and the USA become two pieces at recenter = 180 -- and that is
+  # correct. What must never happen is a country disappearing, an empty
+  # geometry appearing, or area going missing beyond the sliver the cut
+  # removes. None of the 32 existing recenter assertions covered any of that,
+  # so a regression in the seam handling could have dropped countries from
+  # every recentred map silently.
+  skip_if_no_sf_geometry()
+  gws <- countryatlas:::get_world_sf
+  base <- gws(projection = "equal_earth")
+  iso0 <- sort(unique(stats::na.omit(base$iso3c)))
+  area <- function(x) as.numeric(sum(sf::st_area(sf::st_make_valid(x))))
+  a0 <- area(base)
+  expect_gt(length(iso0), 150L)
+  expect_equal(sum(sf::st_is_empty(base)), 0L)
+
+  for (rc in list(0, 11, 150, 180, -180)) {
+    r <- gws(projection = "equal_earth", recenter = rc)
+    # Not one country may go missing.
+    expect_true(all(iso0 %in% r$iso3c),
+                info = paste("countries lost at recenter =", rc))
+    # Splitting is allowed; shrinking is not.
+    expect_gte(nrow(r), nrow(base))
+    # No empty geometry may appear.
+    expect_equal(sum(sf::st_is_empty(r)), 0L,
+                 info = paste("empty geometry at recenter =", rc))
+    # Area survives the cut: only the seam sliver goes.
+    expect_equal(area(r) / a0, 1, tolerance = 0.01)
+  }
+
+  # recenter = NULL and recenter = 0 both mean "leave it alone", so they must
+  # agree with each other and change nothing.
+  expect_equal(nrow(gws(projection = "equal_earth", recenter = 0)), nrow(base))
+  expect_equal(area(gws(projection = "equal_earth", recenter = 0)) / a0, 1,
+               tolerance = 1e-6)
+
+  # The countries that actually straddle 180 are the ones at risk, so name
+  # them: they must still be there, and non-empty, after the cut.
+  at_seam <- intersect(c("RUS", "USA", "NZL", "FJI"), iso0)
+  expect_gt(length(at_seam), 1L)
+  r180 <- gws(projection = "equal_earth", recenter = 180)
+  for (k in at_seam) {
+    piece <- r180[!is.na(r180$iso3c) & r180$iso3c == k, ]
+    expect_gt(nrow(piece), 0L)
+    expect_false(any(sf::st_is_empty(piece)))
+  }
 })

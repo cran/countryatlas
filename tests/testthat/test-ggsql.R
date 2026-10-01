@@ -38,6 +38,7 @@ test_that("print.ggsql_query prints the query", {
 })
 
 test_that("as_ggsql_source writes a DuckDB table", {
+  skip_slow_on_cran()
   skip_if_not_installed("duckdb")
   skip_if_not_installed("DBI")
   df <- data.frame(iso3c = c("USA", "CAN"), value = c(1, 2))
@@ -49,6 +50,7 @@ test_that("as_ggsql_source writes a DuckDB table", {
 })
 
 test_that("as_ggsql_source writes a Parquet file", {
+  skip_slow_on_cran()
   skip_if_not_installed("duckdb")
   skip_if_not_installed("DBI")
   df <- data.frame(iso3c = c("USA", "CAN"), value = c(1, 2))
@@ -71,8 +73,7 @@ test_that("ggsql_wkb_frame WKB-encodes real sf geometry", {
   # Regression: st_as_binary() returns a classed "WKB" object that tibble
   # rejects ("all columns must be vectors"), so every sf input to
   # as_ggsql_source() / interactive_map(engine = "ggsql") used to error.
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   sfd <- world_geometry("countries", geometry = "sf", region = "Europe")
   out <- countryatlas:::ggsql_wkb_frame(sfd)
   expect_s3_class(out, "tbl_df")
@@ -87,8 +88,7 @@ test_that("ggsql_wkb_frame WKB-encodes real sf geometry", {
 
 test_that("as_ggsql_source(format = 'arrow') streams an sf frame", {
   skip_if_not_installed("nanoarrow")
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_if_no_sf_geometry()
   sfd <- world_geometry("countries", geometry = "sf", region = "Europe")
   stream <- as_ggsql_source(sfd, format = "arrow")
   expect_s3_class(stream, "nanoarrow_array_stream")
@@ -101,7 +101,8 @@ test_that("as_ggsql_source errors cleanly without duckdb/DBI", {
   skip_if(requireNamespace("duckdb", quietly = TRUE) &&
           requireNamespace("DBI", quietly = TRUE))
   df <- data.frame(iso3c = "USA", value = 1)
-  expect_error(as_ggsql_source(df, format = "duckdb"))
+  # Pinned to the gate, matching the block below that already does so.
+  expect_error(as_ggsql_source(df, format = "duckdb"), class = "rlib_error_package_not_found")
 })
 
 test_that("world_query omits all optional clauses and escapes quotes", {
@@ -114,8 +115,11 @@ test_that("world_query omits all optional clauses and escapes quotes", {
 
 test_that("ggsql helpers error cleanly without the optional stack", {
   skip_if(requireNamespace("ggsql", quietly = TRUE))
+  # With no pattern this accepted any condition at all -- a typo in the
+  # fixture, or an argument error thrown before engine dispatch was reached.
   expect_error(
-    interactive_map(world_snapshot$countries, gdp_per_capita, engine = "ggsql")
+    interactive_map(world_snapshot$countries, gdp_per_capita, engine = "ggsql"),
+    "ggsql"
   )
 })
 

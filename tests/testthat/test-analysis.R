@@ -7,6 +7,7 @@ test_that("per_capita divides by a supplied population column", {
 })
 
 test_that("per_capita reports a failed population fetch clearly", {
+  skip_slow_on_cran()
   # Regression: fetch_wdi() degrades to a keys-only tibble when the World Bank
   # fetch fails (a timeout, say), and per_capita() then died on an opaque
   # vctrs error -- "Can't subset columns that don't exist: `.wdj_pop`".
@@ -118,7 +119,10 @@ test_that("index_to respects the `to` parameter", {
 
 test_that("index_to returns NA when base year is missing", {
   df <- data.frame(iso3c = "USA", year = 2000:2002, gdp = c(50, 55, 60))
-  out <- index_to(df, gdp, base_year = 1999)
+  # NA is the documented answer; the verb now also names the countries it
+  # could not index, which is what makes an all-NA column readable.
+  expect_warning(out <- index_to(df, gdp, base_year = 1999),
+                 class = "countryatlas_no_base_year")
   expect_true(all(is.na(out$gdp_index)))
 })
 
@@ -135,7 +139,10 @@ test_that("index_to is per-country", {
 
 test_that("index_to returns NA for zero-valued base", {
   df <- data.frame(iso3c = "A", year = 2000:2002, gdp = c(0, 1, 2))
-  out <- index_to(df, gdp, base_year = 2000)
+  # A zero base is unusable, so this country is reported like any other the
+  # verb cannot index.
+  expect_warning(out <- index_to(df, gdp, base_year = 2000),
+                 class = "countryatlas_no_base_year")
   expect_true(all(is.na(out$gdp_index)))
 })
 
@@ -196,6 +203,7 @@ test_that("rank_countries ranks globally unless `within` says otherwise", {
 })
 
 test_that("an incidental group_by() never changes an answer", {
+  skip_slow_on_cran()
   panel <- tibble::tibble(
     iso3c = rep(c("USA", "FRA", "CHN"), each = 4),
     year = rep(2000:2003, 3), region = rep(c("A", "B", "A"), each = 4),
@@ -215,6 +223,30 @@ test_that("an incidental group_by() never changes an answer", {
   expect_equal(flat(aggregate_regions(grp, g, by = "region")),
                flat(aggregate_regions(panel, g, by = "region")))
   expect_equal(flat(rank_countries(grp, g)), flat(rank_countries(panel, g)))
+  # The 3.0.0 verbs postdate this test, and rank_countries()'s comment claims
+  # "every other function here likewise imposes its own grouping" -- so check
+  # them rather than take the claim.
+  expect_equal(flat(interpolate_missing(grp, "g")),
+               flat(interpolate_missing(panel, "g")))
+  expect_equal(flat(deflate(grp, g, 2000, deflator = population)),
+               flat(deflate(panel, g, 2000, deflator = population)))
+  expect_equal(flat(to_ppp(grp, g, factor = population)),
+               flat(to_ppp(panel, g, factor = population)))
+  expect_equal(flat(sigma_convergence(grp, g)), flat(sigma_convergence(panel, g)))
+  # These reduce to one row per country, so a 4-year panel earns the
+  # countryatlas_panel warning. That is correct and has its own test; here the
+  # question is only whether grouping changed the answer.
+  suppressWarnings({
+    expect_equal(flat(rate_check(grp, g, population)),
+                 flat(rate_check(panel, g, population)))
+    # smooth_rates() joined these once its pooled prior started reading one row
+    # per country rather than every row of the panel.
+    expect_equal(flat(smooth_rates(grp, g, population)),
+                 flat(smooth_rates(panel, g, population)))
+    expect_equal(flat(correlate_indicators(grp)),
+                 flat(correlate_indicators(panel)))
+    expect_equal(audit_coverage(grp)$na_rates, audit_coverage(panel)$na_rates)
+  })
 
   # The panel branch was safe by accident: share_of_world() regroups by `year`,
   # which replaces the caller's groups. Without a `year` column nothing replaced
@@ -293,6 +325,7 @@ test_that("aggregating groups that do have data is unchanged", {
 })
 
 test_that("aggregate_regions warns when handed map geometry", {
+  skip_slow_on_cran()
   # The polygon backend expands each country into ~400 vertex rows, so a
   # row-wise sum counts it that many times: for the bundled snapshot a regional
   # total of 497,265 became 280,951,373, silently. It cannot de-duplicate on
@@ -318,6 +351,7 @@ test_that("aggregate_regions warns when handed map geometry", {
 })
 
 test_that("complete_years(value=) does not fill the columns it was not given", {
+  skip_slow_on_cran()
   # `static <- setdiff(names(data), c("year", value))` counted an unlisted
   # numeric column as a static attribute, so it got carry-filled -- naming
   # *fewer* columns in `value` fabricated *more* data, and even method = "none"
@@ -345,6 +379,7 @@ test_that("complete_years(value=) does not fill the columns it was not given", {
 })
 
 test_that("aggregate_regions refuses a weight it would ignore", {
+  skip_slow_on_cran()
   # `weight` is read only by fun = "weighted_mean". Any other fun silently
   # returned the *unweighted* figure -- on European GDP per capita that is
   # 38,323 against a population-weighted 29,896, a 22% error with nothing to

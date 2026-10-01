@@ -6,7 +6,8 @@
 test_that("historical_codes has the expected shape", {
   expect_s3_class(historical_codes, "tbl_df")
   expect_named(historical_codes,
-               c("historical", "iso3c_hist", "dissolved", "iso3c", "country"))
+               c("historical", "iso3c_hist", "dissolved", "iso3c", "relation",
+                 "country"))
   expect_equal(nrow(historical_codes), 41L)
   expect_false(anyNA(historical_codes$iso3c))
   expect_false(anyNA(historical_codes$country))
@@ -222,11 +223,12 @@ test_that("theil shares are NA (not NaN) at perfect equality", {
 # --- Moran's I ------------------------------------------------------------------
 
 test_that("morans_i finds spatial autocorrelation in GDP (needs sf)", {
-  skip_if_not_installed("sf")
-  skip_if_not_installed("rnaturalearth")
+  skip_slow_on_cran()
+  skip_if_no_sf_geometry()
   set.seed(42)
   out <- morans_i(world_snapshot$countries, gdp_per_capita, n_perm = 199)
-  expect_named(out, c("i", "expected", "n", "n_links", "p_value"))
+  expect_named(out, c("i", "expected", "n", "n_excluded", "n_links",
+                      "p_value", "excluded"))
   expect_gt(out$i, 0.3)          # GDP clusters strongly in space
   expect_lt(out$p_value, 0.05)
   expect_gt(out$n, 100)
@@ -244,8 +246,9 @@ test_that("morans_i validates input", {
 # --- spike_map ------------------------------------------------------------------
 
 test_that("spike_map builds a ggplot with one triangle per country", {
+  skip_slow_on_cran()
   skip_if_not_installed("maps")
-  p <- spike_map(world_snapshot$countries, population)
+  p <- suppressWarnings(spike_map(world_snapshot$countries, population))
   expect_s3_class(p, "ggplot")
   expect_silent(ggplot2::ggplot_build(p))
   spikes <- p$layers[[2]]$data
@@ -271,6 +274,7 @@ test_that("convert_country(to = 'name_<lang>') returns localized names", {
 # --- formatted binned legends ---------------------------------------------------
 
 test_that("binned style builds with SI-formatted labels", {
+  skip_slow_on_cran()
   skip_if_not_installed("scales")
   # The shared formatter renders 4e+06 as "4M".
   fmt <- countryatlas:::scales_format()

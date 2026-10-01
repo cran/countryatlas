@@ -23,9 +23,29 @@ The persistent cache goes in the standard per-user cache location,
 \code{cache = FALSE} to \code{\link[=world_data]{world_data()}} / \code{\link[=country_data]{country_data()}}. The directory itself is
 created the first time a cached fetch is attempted, whether or not the World
 Bank answers; only a successful fetch leaves a response in it, and reading the
-bundled \link{world_snapshot} never goes near it. Under \code{R CMD check} the whole
+bundled \link{world_snapshot} never goes near it. Under \verb{R CMD check} the whole
 cache moves to the session temp directory, so a check never writes to the
 user's file space.
+
+The directory may hold other files too. The cache only ever writes, expires
+and deletes its own entries (named by a hash, with the extension
+\code{.countryatlas}), and \code{disk = TRUE} removes the directory itself only when
+that leaves it empty.
+}
+
+\section{How the cache is managed}{
+
+The persistent cache expires its own contents, so it does not grow without
+bound and does not serve stale figures indefinitely: an entry is dropped
+once it is 30 days old, and if the directory exceeds 50 MB the
+least-recently-used entries go first. Both limits are adjustable with
+\code{options(countryatlas.cache_max_age = )} (seconds) and
+\code{options(countryatlas.cache_max_size = )} (bytes). A dropped entry costs a
+re-fetch, nothing more.
+
+Expiry matters beyond disk space: World Bank observations are revised, so a
+figure cached long ago is not necessarily the figure the API would return
+today.
 }
 
 \examples{
