@@ -8,8 +8,7 @@ library(ggplot2)
 has_sf <- requireNamespace("sf", quietly = TRUE) &&
   requireNamespace("rnaturalearth", quietly = TRUE) &&
   requireNamespace("rnaturalearthdata", quietly = TRUE)
-has_globe <- requireNamespace("maps", quietly = TRUE) &&
-  requireNamespace("mapproj", quietly = TRUE)
+has_globe <- requireNamespace("mapproj", quietly = TRUE)
 
 ## ----eval = FALSE-------------------------------------------------------------
 # install.packages(c("sf", "rnaturalearth", "rnaturalearthdata"))

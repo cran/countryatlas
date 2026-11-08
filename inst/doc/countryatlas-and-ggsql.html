@@ -343,16 +343,11 @@ code > span.er { color: #a61717; background-color: #e3d2d2; }
 
 <p><a href="https://ggsql.org">ggsql</a> is a grammar of graphics for
 SQL: you describe a plot <em>inside a SQL query</em> and it renders in
-the database (DuckDB), returning a web-ready Vega-Lite widget, with no
-ggplot2 or <code>sf</code> runtime required. The spatial layer this
-vignette targets (<code>DRAW spatial</code>, which reads WKB geometry)
-arrived in the ggsql <em>engine</em> at 0.4.0, and
-<code>countryatlas</code> requires the ggsql <strong>R package</strong>
-at &gt;= 0.4.1, the first release that exposes it – which is the version
-[interactive_map()] checks for. At the time of writing the R package is
-still at 0.3.3, so the bridge below is forward-looking:
-<code>world_query()</code> builds the query today, and the chunks that
-would execute one are shown but not evaluated.</p>
+the database (DuckDB), returning a plot that draws as SVG or as an
+interactive widget, with no ggplot2 runtime required. Its spatial layer,
+<code>DRAW spatial</code>, reached CRAN with ggsql 0.5.2 on 2026-10-08,
+and countryatlas needs ggsql &gt;= 0.5.0, the version
+[interactive_map()] checks for.</p>
 <p>countryatlas and ggsql fit together cleanly:</p>
 <ul>
 <li><strong>countryatlas</strong> does the part ggsql’s static bundled
@@ -360,8 +355,8 @@ world can’t: reconcile messy country names to the ISO spine, repair the
 entities map backends get wrong (<code>country_overrides()</code>), and
 join World Bank indicators onto geometry.</li>
 <li><strong>ggsql</strong> does the part countryatlas doesn’t: push the
-rendering down into the database and emit Vega-Lite, so the geometry
-never has to come back into R.</li>
+rendering down into the database, so the geometry never has to come back
+into R.</li>
 </ul>
 <p>So countryatlas becomes the <em>data layer</em> and ggsql the
 <em>renderer</em>.</p>
@@ -376,52 +371,78 @@ installed), so you can see exactly what will be sent to ggsql:</p>
 <span id="cb1-5"><a href="#cb1-5" tabindex="-1"></a>  <span class="at">transform  =</span> <span class="st">&quot;log10&quot;</span>,</span>
 <span id="cb1-6"><a href="#cb1-6" tabindex="-1"></a>  <span class="at">title      =</span> <span class="st">&quot;GDP per capita&quot;</span></span>
 <span id="cb1-7"><a href="#cb1-7" tabindex="-1"></a>)</span>
-<span id="cb1-8"><a href="#cb1-8" tabindex="-1"></a><span class="co">#&gt; VISUALISE gdp_per_capita AS fill</span></span>
-<span id="cb1-9"><a href="#cb1-9" tabindex="-1"></a><span class="co">#&gt; FROM countryatlas_world</span></span>
-<span id="cb1-10"><a href="#cb1-10" tabindex="-1"></a><span class="co">#&gt; DRAW spatial</span></span>
-<span id="cb1-11"><a href="#cb1-11" tabindex="-1"></a><span class="co">#&gt; PROJECT TO equal_earth</span></span>
-<span id="cb1-12"><a href="#cb1-12" tabindex="-1"></a><span class="co">#&gt; SCALE fill TO magma VIA log10</span></span>
-<span id="cb1-13"><a href="#cb1-13" tabindex="-1"></a><span class="co">#&gt; LABEL title =&gt; &#39;GDP per capita&#39;</span></span></code></pre></div>
+<span id="cb1-8"><a href="#cb1-8" tabindex="-1"></a><span class="co">#&gt; VISUALISE gdp_per_capita AS fill, geometry FROM countryatlas_world</span></span>
+<span id="cb1-9"><a href="#cb1-9" tabindex="-1"></a><span class="co">#&gt; DRAW spatial</span></span>
+<span id="cb1-10"><a href="#cb1-10" tabindex="-1"></a><span class="co">#&gt; PROJECT TO equal_earth</span></span>
+<span id="cb1-11"><a href="#cb1-11" tabindex="-1"></a><span class="co">#&gt; SCALE fill TO magma VIA log10</span></span>
+<span id="cb1-12"><a href="#cb1-12" tabindex="-1"></a><span class="co">#&gt; LABEL title =&gt; &#39;GDP per capita&#39;</span></span></code></pre></div>
+<p>Every projection the package knows has a translation, and the other
+layers are a word away:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb2-1"><a href="#cb2-1" tabindex="-1"></a><span class="fu">world_query</span>(gdp_per_capita, <span class="at">projection =</span> <span class="st">&quot;north_polar&quot;</span>, <span class="at">layer =</span> <span class="st">&quot;binned&quot;</span>)</span>
+<span id="cb2-2"><a href="#cb2-2" tabindex="-1"></a><span class="co">#&gt; VISUALISE gdp_per_capita AS fill, geometry FROM countryatlas_world</span></span>
+<span id="cb2-3"><a href="#cb2-3" tabindex="-1"></a><span class="co">#&gt; DRAW spatial</span></span>
+<span id="cb2-4"><a href="#cb2-4" tabindex="-1"></a><span class="co">#&gt; PROJECT TO lambert SETTING origin =&gt; (0, 90)</span></span>
+<span id="cb2-5"><a href="#cb2-5" tabindex="-1"></a><span class="co">#&gt; SCALE BINNED fill TO viridis SETTING breaks =&gt; 5</span></span>
+<span id="cb2-6"><a href="#cb2-6" tabindex="-1"></a><span class="fu">world_query</span>(gdp_per_capita, <span class="at">layer =</span> <span class="st">&quot;bubble&quot;</span>, <span class="at">size =</span> <span class="st">&quot;population&quot;</span>)</span>
+<span id="cb2-7"><a href="#cb2-7" tabindex="-1"></a><span class="co">#&gt; VISUALISE FROM countryatlas_world</span></span>
+<span id="cb2-8"><a href="#cb2-8" tabindex="-1"></a><span class="co">#&gt; DRAW spatial</span></span>
+<span id="cb2-9"><a href="#cb2-9" tabindex="-1"></a><span class="co">#&gt;   MAPPING geometry</span></span>
+<span id="cb2-10"><a href="#cb2-10" tabindex="-1"></a><span class="co">#&gt; DRAW point</span></span>
+<span id="cb2-11"><a href="#cb2-11" tabindex="-1"></a><span class="co">#&gt;   MAPPING centroid_lon AS lon, centroid_lat AS lat, population AS size, gdp_per_capita AS fill</span></span>
+<span id="cb2-12"><a href="#cb2-12" tabindex="-1"></a><span class="co">#&gt; PROJECT TO equal_earth</span></span>
+<span id="cb2-13"><a href="#cb2-13" tabindex="-1"></a><span class="co">#&gt; SCALE fill TO viridis</span></span></code></pre></div>
 </div>
 <div id="render-in-the-database" class="section level2">
 <h2>Render in the database</h2>
-<p><code>as_ggsql_source()</code> exports a curated countryatlas table
-(with <code>sf</code> geometry WKB-encoded) to a DuckDB connection, a
-Parquet file, or a nanoarrow stream that ggsql can read. The one-call
-path is <code>interactive_map(engine = &quot;ggsql&quot;)</code>:</p>
-<div class="sourceCode" id="cb2"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb2-1"><a href="#cb2-1" tabindex="-1"></a><span class="co"># needs: ggsql, duckdb, DBI, sf</span></span>
-<span id="cb2-2"><a href="#cb2-2" tabindex="-1"></a><span class="fu">world_data</span>(<span class="dv">2020</span>, <span class="at">geometry =</span> <span class="st">&quot;sf&quot;</span>) <span class="sc">|&gt;</span></span>
-<span id="cb2-3"><a href="#cb2-3" tabindex="-1"></a>  <span class="fu">interactive_map</span>(gdp_per_capita, <span class="at">engine =</span> <span class="st">&quot;ggsql&quot;</span>, <span class="at">transform =</span> <span class="st">&quot;log10&quot;</span>)</span></code></pre></div>
+<p><code>as_ggsql_source()</code> hands a curated countryatlas table to
+ggsql: by default as a ggsql reader with the table registered,
+<code>sf</code> geometry encoded as WKB in longitude and latitude, and
+DuckDB’s <code>spatial</code> extension loaded. ggsql’s DuckDB downloads
+that extension once per session, into the session’s temporary directory.
+The one-call path is <code>interactive_map(engine = &quot;ggsql&quot;)</code>:</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb3-1"><a href="#cb3-1" tabindex="-1"></a>d <span class="ot">&lt;-</span> <span class="fu">attach_geometry</span>(world_snapshot<span class="sc">$</span>countries, <span class="at">geometry =</span> <span class="st">&quot;sf&quot;</span>)</span>
+<span id="cb3-2"><a href="#cb3-2" tabindex="-1"></a><span class="fu">interactive_map</span>(d, gdp_per_capita, <span class="at">engine =</span> <span class="st">&quot;ggsql&quot;</span>, <span class="at">transform =</span> <span class="st">&quot;log10&quot;</span>)</span></code></pre></div>
 <p>Under the hood that is just the two building blocks, which you can
-also drive yourself for full control over the query:</p>
-<div class="sourceCode" id="cb3"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb3-1"><a href="#cb3-1" tabindex="-1"></a>src <span class="ot">&lt;-</span> <span class="fu">world_data</span>(<span class="dv">2020</span>, <span class="at">geometry =</span> <span class="st">&quot;sf&quot;</span>) <span class="sc">|&gt;</span></span>
-<span id="cb3-2"><a href="#cb3-2" tabindex="-1"></a>  <span class="fu">as_ggsql_source</span>(<span class="at">format =</span> <span class="st">&quot;duckdb&quot;</span>)          <span class="co"># a DuckDB connection</span></span>
-<span id="cb3-3"><a href="#cb3-3" tabindex="-1"></a></span>
-<span id="cb3-4"><a href="#cb3-4" tabindex="-1"></a>q <span class="ot">&lt;-</span> <span class="fu">world_query</span>(gdp_per_capita, <span class="at">projection =</span> <span class="st">&quot;orthographic&quot;</span>, <span class="at">palette =</span> <span class="st">&quot;viridis&quot;</span>)</span>
-<span id="cb3-5"><a href="#cb3-5" tabindex="-1"></a></span>
-<span id="cb3-6"><a href="#cb3-6" tabindex="-1"></a>ggsql<span class="sc">::</span><span class="fu">ggsql_execute</span>(src, q)                  <span class="co"># -&gt; Vega-Lite widget</span></span></code></pre></div>
+also drive yourself for full control over the query and the output:</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb4-1"><a href="#cb4-1" tabindex="-1"></a>reader <span class="ot">&lt;-</span> <span class="fu">as_ggsql_source</span>(d)</span>
+<span id="cb4-2"><a href="#cb4-2" tabindex="-1"></a>spec <span class="ot">&lt;-</span> ggsql<span class="sc">::</span><span class="fu">ggsql_execute</span>(</span>
+<span id="cb4-3"><a href="#cb4-3" tabindex="-1"></a>  reader,</span>
+<span id="cb4-4"><a href="#cb4-4" tabindex="-1"></a>  <span class="fu">world_query</span>(gdp_per_capita, <span class="at">projection =</span> <span class="st">&quot;orthographic&quot;</span>, <span class="at">palette =</span> <span class="st">&quot;viridis&quot;</span>)</span>
+<span id="cb4-5"><a href="#cb4-5" tabindex="-1"></a>)</span>
+<span id="cb4-6"><a href="#cb4-6" tabindex="-1"></a>ggsql<span class="sc">::</span><span class="fu">ggsql_widget</span>(spec)</span></code></pre></div>
+<p><code>ggsql::ggsql_render(ggsql::svg_writer(), spec)</code> returns
+the same map as SVG markup, and
+<code>ggsql::ggsql_save(spec, &quot;map.png&quot;)</code> writes it to a file.</p>
 </div>
 <div id="in-a-quarto-r-markdown-document" class="section level2">
 <h2>In a Quarto / R Markdown document</h2>
-<p>Loading <code>ggsql</code> registers a chunk engine. Export the
-source once, then chart it in a <code>```{ggsql}</code> block,
-referencing the registered table by name:</p>
-<div class="sourceCode" id="cb4"><pre class="sourceCode default"><code class="sourceCode default"><span id="cb4-1"><a href="#cb4-1" tabindex="-1"></a>```{r}</span>
-<span id="cb4-2"><a href="#cb4-2" tabindex="-1"></a>library(countryatlas)</span>
-<span id="cb4-3"><a href="#cb4-3" tabindex="-1"></a>library(ggsql)</span>
-<span id="cb4-4"><a href="#cb4-4" tabindex="-1"></a></span>
-<span id="cb4-5"><a href="#cb4-5" tabindex="-1"></a>src &lt;- world_data(2020, geometry = &quot;sf&quot;) |&gt;</span>
-<span id="cb4-6"><a href="#cb4-6" tabindex="-1"></a>  as_ggsql_source(format = &quot;duckdb&quot;)          # registers countryatlas_world</span>
-<span id="cb4-7"><a href="#cb4-7" tabindex="-1"></a>```</span>
-<span id="cb4-8"><a href="#cb4-8" tabindex="-1"></a></span>
-<span id="cb4-9"><a href="#cb4-9" tabindex="-1"></a>```{ggsql connection=src}</span>
-<span id="cb4-10"><a href="#cb4-10" tabindex="-1"></a>VISUALISE gdp_per_capita AS fill</span>
-<span id="cb4-11"><a href="#cb4-11" tabindex="-1"></a>FROM countryatlas_world</span>
-<span id="cb4-12"><a href="#cb4-12" tabindex="-1"></a>DRAW spatial</span>
-<span id="cb4-13"><a href="#cb4-13" tabindex="-1"></a>PROJECT TO equal_earth</span>
-<span id="cb4-14"><a href="#cb4-14" tabindex="-1"></a>SCALE fill TO magma VIA log10</span>
-<span id="cb4-15"><a href="#cb4-15" tabindex="-1"></a>LABEL title =&gt; &#39;GDP per capita, 2020&#39;</span>
-<span id="cb4-16"><a href="#cb4-16" tabindex="-1"></a>```</span></code></pre></div>
+<p>Loading <code>ggsql</code> registers a chunk engine, and a
+<code>```{ggsql}</code> block reads R data as
+<code>r:&lt;object&gt;</code>.
+<code>as_ggsql_source(format = &quot;frame&quot;)</code> returns the prepared
+frame for that; load DuckDB’s <code>spatial</code> extension once, then
+chart it:</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode default"><code class="sourceCode default"><span id="cb5-1"><a href="#cb5-1" tabindex="-1"></a>```{r}</span>
+<span id="cb5-2"><a href="#cb5-2" tabindex="-1"></a>library(countryatlas)</span>
+<span id="cb5-3"><a href="#cb5-3" tabindex="-1"></a>library(ggsql)</span>
+<span id="cb5-4"><a href="#cb5-4" tabindex="-1"></a></span>
+<span id="cb5-5"><a href="#cb5-5" tabindex="-1"></a>world &lt;- world_data(2020, geometry = &quot;sf&quot;) |&gt;</span>
+<span id="cb5-6"><a href="#cb5-6" tabindex="-1"></a>  as_ggsql_source(format = &quot;frame&quot;)</span>
+<span id="cb5-7"><a href="#cb5-7" tabindex="-1"></a>```</span>
+<span id="cb5-8"><a href="#cb5-8" tabindex="-1"></a></span>
+<span id="cb5-9"><a href="#cb5-9" tabindex="-1"></a>```{ggsql}</span>
+<span id="cb5-10"><a href="#cb5-10" tabindex="-1"></a>SET extension_directory = &#39;duckdb-extensions&#39;;</span>
+<span id="cb5-11"><a href="#cb5-11" tabindex="-1"></a>INSTALL spatial;</span>
+<span id="cb5-12"><a href="#cb5-12" tabindex="-1"></a>LOAD spatial;</span>
+<span id="cb5-13"><a href="#cb5-13" tabindex="-1"></a>```</span>
+<span id="cb5-14"><a href="#cb5-14" tabindex="-1"></a></span>
+<span id="cb5-15"><a href="#cb5-15" tabindex="-1"></a>```{ggsql}</span>
+<span id="cb5-16"><a href="#cb5-16" tabindex="-1"></a>VISUALISE gdp_per_capita AS fill, geometry FROM r:world</span>
+<span id="cb5-17"><a href="#cb5-17" tabindex="-1"></a>DRAW spatial</span>
+<span id="cb5-18"><a href="#cb5-18" tabindex="-1"></a>PROJECT TO equal_earth</span>
+<span id="cb5-19"><a href="#cb5-19" tabindex="-1"></a>SCALE fill TO magma VIA log10</span>
+<span id="cb5-20"><a href="#cb5-20" tabindex="-1"></a>LABEL title =&gt; &#39;GDP per capita, 2020&#39;</span>
+<span id="cb5-21"><a href="#cb5-21" tabindex="-1"></a>```</span></code></pre></div>
 </div>
 <div id="why-bother" class="section level2">
 <h2>Why bother?</h2>

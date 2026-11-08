@@ -12,10 +12,6 @@ knitr::opts_chunk$set(
 library(countryatlas)
 library(ggplot2)
 library(dplyr)
-# The polygon backend needs `maps`, which is only in Suggests, so every chunk
-# that attaches or draws polygon geometry is guarded on this. Without it the
-# vignette still builds -- it just skips those maps.
-has_maps <- requireNamespace("maps", quietly = TRUE)
 
 ## -----------------------------------------------------------------------------
 snapshot <- world_snapshot$countries
@@ -31,24 +27,24 @@ dplyr::glimpse(snapshot)
 #   region    = "Africa"
 # )
 
-## ----eval = has_maps----------------------------------------------------------
+## -----------------------------------------------------------------------------
 mapdf <- attach_geometry(snapshot, geometry = "polygon")
 dim(mapdf)
 
-## ----eval = has_maps, fig.alt = "World choropleth of GDP per capita in quantile bins."----
+## ----fig.alt = "World choropleth of GDP per capita in quantile bins."---------
 world_map(mapdf, gdp_per_capita, style = "quantile",
           title = "GDP per capita (quantile bins)")
 
-## ----eval = has_maps, fig.alt = "World map with every country coloured by its continent."----
+## ----fig.alt = "World map with every country coloured by its continent."------
 world_map(mapdf, continent, style = "categorical")
 
-## ----eval = has_maps, fig.alt = "Bubble map: population drawn as proportional circles at country centroids."----
+## ----fig.alt = "Bubble map: population drawn as proportional circles at country centroids."----
 bubble_map(snapshot, population)
 
 ## ----fig.height = 5, fig.alt = "Equal-area tile grid: one identically sized tile per country, shaded by life expectancy."----
 tile_map(snapshot, life_expectancy)
 
-## ----eval = has_maps, fig.alt = "Flow map: great-circle arcs joining four origin-destination country pairs, width by volume."----
+## ----fig.alt = "Flow map: great-circle arcs joining four origin-destination country pairs, width by volume."----
 flows <- data.frame(
   from   = c("China", "Germany", "Brazil", "India"),
   to     = c("United States", "France", "Japan", "United Kingdom"),
@@ -72,7 +68,7 @@ country_join(left, right, country, nation)
 check_country_match(c("USA", "Cote d'Ivoire", "Yugoslavia", "Wakanda"))
 
 ## -----------------------------------------------------------------------------
-repair_country_names(c("Brzil", "Germny", "United States"), verbose = FALSE)
+repair_country_names(c("Brzil", "Germny", "United States"), quiet = TRUE)
 
 ## -----------------------------------------------------------------------------
 audit_coverage(snapshot)$na_rates

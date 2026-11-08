@@ -9,10 +9,6 @@ library(dplyr)
 has_sf <- requireNamespace("sf", quietly = TRUE) &&
   requireNamespace("rnaturalearth", quietly = TRUE) &&
   requireNamespace("rnaturalearthdata", quietly = TRUE)
-# The polygon backend needs `maps`, which is only in Suggests, so every chunk
-# that attaches or draws polygon geometry is guarded on this. Without it the
-# vignette still builds -- it just skips those maps.
-has_maps <- requireNamespace("maps", quietly = TRUE)
 
 ## -----------------------------------------------------------------------------
 my_data <- data.frame(
@@ -21,7 +17,7 @@ my_data <- data.frame(
 )
 standardize_country(my_data, nation, warn = FALSE)
 
-## ----eval = has_maps, fig.alt = "World choropleth of a user-supplied score column after joining to the ISO spine."----
+## ----fig.alt = "World choropleth of a user-supplied score column after joining to the ISO spine."----
 my_data |>
   join_world(nation, warn = FALSE) |>
   world_map(score, title = "My data on the ISO spine")

@@ -306,6 +306,22 @@ warn_dots_unused <- function(dots, engine, alternative) {
   warn_engine_ignored(nm, engine, alternative)
 }
 
+# An adapter that reads its provider directly has nothing to hand `...` to.
+# The 3.0.0 adapters passed it to a client package; a call written for one of
+# those must hear that its arguments now go nowhere.
+warn_adapter_dots <- function(dots, fn) {
+  if (!length(dots)) return(invisible(NULL))
+  nm <- names(dots)
+  if (is.null(nm)) nm <- rep("", length(dots))
+  nm[!nzchar(nm)] <- paste0("..", seq_along(nm)[!nzchar(nm)])
+  wdj_warn(c(
+    "{.fn {fn}} takes no further arguments and ignores
+     {cli::qty(length(nm))}{?this one/these}: {.arg {nm}}.",
+    "i" = "It reads its provider directly; see {.help countryatlas::{fn}}."
+  ), class = "countryatlas_dots_unused")
+  invisible(NULL)
+}
+
 # A derived column that comes out NA in every row means the verb accomplished
 # nothing at all. Each of the verbs that calls this reads neighbouring rows, so
 # the usual cause is a cross-section handed to a panel verb: there is no
@@ -395,6 +411,40 @@ gg_title <- function(p) {
   } else {
     p$labels$title
   }
+}
+
+# The plot's caption, read the same way, so a verb can add to it rather than
+# replace what world_map() already wrote there.
+gg_caption <- function(p) {
+  cap <- if ("get_labs" %in% getNamespaceExports("ggplot2")) {
+    ggplot2::get_labs(p)$caption
+  } else {
+    p$labels$caption
+  }
+  if (is.null(cap) || !is.character(cap) || !length(cap) || !nzchar(cap[1])) {
+    return(NULL)
+  }
+  cap
+}
+
+# Captions are written as sentences, and ggplot2 never wraps text: a
+# right-aligned caption longer than the plot is cut off at its left edge. The
+# automatic ones run to 170 characters (coverage, the verb's notes, the
+# source, and lisa_map()'s multiple-testing method), so at the default 7-inch
+# width the start of the coverage statement was lost. Wrap at a width a
+# 7-inch figure holds (theme_world_map() aligns the caption to the whole plot),
+# keeping any line break a verb wrote itself; flat_caption() undoes it, for
+# comparing captions and for appending to one.
+wrap_caption <- function(x, width = 80L) {
+  if (is.null(x) || !length(x) || is.na(x[1]) || !nzchar(x[1])) return(x)
+  paras <- strsplit(x[1], "\n", fixed = TRUE)[[1]]
+  paste(vapply(paras, function(s) paste(strwrap(s, width = width), collapse = "\n"),
+               character(1), USE.NAMES = FALSE), collapse = "\n")
+}
+
+flat_caption <- function(x) {
+  if (is.null(x)) return(x)
+  gsub("[ \t]*\n[ \t]*", " ", x)
 }
 
 # The plot's own data slot. layer_data() is NOT the same thing -- that is the
@@ -655,6 +705,33 @@ unit_label <- function(df) {
   out
 }
 
+# Name the rows where two values about to be combined come from different
+# years. country_data(latest = TRUE) takes each indicator's own most recent
+# value and records it in `<indicator>_year`, so a row can hold GDP from 2023
+# beside population from 2021; dividing one by the other is a number for no
+# year at all. `ya` and `yb` are the year columns to compare, by default the
+# companions of `a` and `b`; a verb that fetches its own denominator for
+# `year` compares against that instead.
+warn_mixed_years <- function(data, a, b, ya = paste0(a, "_year"),
+                             yb = paste0(b, "_year"), what = "combines",
+                             call = rlang::caller_env()) {
+  if (!all(c(ya, yb) %in% names(data))) return(invisible(FALSE))
+  y1 <- suppressWarnings(as.numeric(as.character(data[[ya]])))
+  y2 <- suppressWarnings(as.numeric(as.character(data[[yb]])))
+  bad <- !is.na(y1) & !is.na(y2) & y1 != y2
+  if (!any(bad)) return(invisible(FALSE))
+  detail <- sprintf("%s: %s %s, %s %s", unit_label(data[bad, , drop = FALSE]),
+                    a, fmt_num(y1[bad]), b, fmt_num(y2[bad]))
+  wdj_warn(c(
+    "{sum(bad)} row{?s} {what} {.field {a}} and {.field {b}} from different
+     years:",
+    "*" = "{.val {utils::head(detail, 5)}}",
+    "i" = 'Take one year for both with {.code latest = "common"} in
+           {.fn country_data} or {.fn world_data}, or align the years first.'
+  ), class = "countryatlas_mixed_years", call = call)
+  invisible(TRUE)
+}
+
 # The grouping key for a per-country verb, and why iso3c alone is not it.
 #
 # `dplyr::group_by()` puts every NA in ONE group, so a panel carrying two rows
@@ -797,6 +874,15 @@ distinct_countries <- function(df, arg = "data") {
     unc <- earliest_per_unit(unc, ukey[1])
   }
   dplyr::bind_rows(coded, unc)
+}
+
+# One row per key of a lookup the package fetched for itself. A raw World Bank
+# frame can repeat an iso3c-year (two iso2c codes reaching one iso3c; see
+# fetch_wdi()), and the join that reads it is declared many-to-one, so it would
+# refuse a repeat that it used to fan out silently. country_data() keeps the
+# first row of each key; so do the verbs that fetch on the caller's behalf.
+one_per_key <- function(df, keys = c("iso3c", "year")) {
+  df[!duplicated(df[, keys, drop = FALSE]), , drop = FALSE]
 }
 
 # Scalar-string validator, the character counterpart of check_number(). The
